@@ -5,6 +5,7 @@ Optimize for: simplicity, hackability, minimal dependencies, and long-term maint
 
 ## Read these first
 - README.md
+- docs/STYLE.md
 - docs/ARCHITECTURE.md (when it exists)
 - docs/Adrs/*
 - docs/TODO.md (current task only)
