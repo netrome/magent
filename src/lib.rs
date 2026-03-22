@@ -1,6 +1,7 @@
 pub mod llm;
 pub mod parser;
 pub mod watcher;
+pub mod writer;
 
 use std::path::PathBuf;
 
