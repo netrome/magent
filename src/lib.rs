@@ -1,3 +1,4 @@
+pub mod parser;
 pub mod watcher;
 
 use std::path::PathBuf;
