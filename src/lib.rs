@@ -97,7 +97,7 @@ async fn process_file(path: &Path, client: &impl LlmClient) {
     for directive in directives.iter().filter(|d| !d.processed) {
         println!("Processing: @magent {}", directive.prompt);
 
-        let response = match client.complete(&directive.prompt).await {
+        let response = match client.complete(&directive.prompt, Some(&content)).await {
             Ok(r) => r,
             Err(e) => format!("**Error:** {e}"),
         };
@@ -117,7 +117,11 @@ mod tests {
     struct FakeLlm(String);
 
     impl LlmClient for FakeLlm {
-        async fn complete(&self, _prompt: &str) -> Result<String, llm::LlmError> {
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _document: Option<&str>,
+        ) -> Result<String, llm::LlmError> {
             Ok(self.0.clone())
         }
     }
@@ -125,7 +129,11 @@ mod tests {
     struct FailingLlm(String);
 
     impl LlmClient for FailingLlm {
-        async fn complete(&self, _prompt: &str) -> Result<String, llm::LlmError> {
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _document: Option<&str>,
+        ) -> Result<String, llm::LlmError> {
             Err(llm::LlmError::Connection(self.0.clone()))
         }
     }
@@ -136,9 +144,36 @@ mod tests {
     }
 
     impl LlmClient for SpyLlm {
-        async fn complete(&self, _prompt: &str) -> Result<String, llm::LlmError> {
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _document: Option<&str>,
+        ) -> Result<String, llm::LlmError> {
             self.call_count.fetch_add(1, Ordering::Relaxed);
             Ok(self.response.clone())
+        }
+    }
+
+    struct DocumentCaptureLlm {
+        captured_document: std::sync::Mutex<Option<String>>,
+    }
+
+    impl DocumentCaptureLlm {
+        fn new() -> Self {
+            Self {
+                captured_document: std::sync::Mutex::new(None),
+            }
+        }
+    }
+
+    impl LlmClient for DocumentCaptureLlm {
+        async fn complete(
+            &self,
+            _prompt: &str,
+            document: Option<&str>,
+        ) -> Result<String, llm::LlmError> {
+            *self.captured_document.lock().unwrap() = document.map(String::from);
+            Ok("Response.".to_string())
         }
     }
 
@@ -266,5 +301,30 @@ mod tests {
         assert_eq!(directives.len(), 2);
         assert!(directives[0].processed);
         assert!(directives[1].processed);
+    }
+
+    #[tokio::test]
+    async fn process_file__should_pass_document_content_to_llm() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        let file_content = "# My Essay\n\nThe sky is blue.\n\n@magent summarize this document\n";
+        std::fs::write(&path, file_content).unwrap();
+        let client = DocumentCaptureLlm::new();
+
+        // When
+        process_file(&path, &client).await;
+
+        // Then
+        let captured = client.captured_document.lock().unwrap();
+        let document = captured.as_ref().expect("document should be passed to LLM");
+        assert!(
+            document.contains("# My Essay"),
+            "document context should contain the file heading"
+        );
+        assert!(
+            document.contains("The sky is blue."),
+            "document context should contain the file body"
+        );
     }
 }

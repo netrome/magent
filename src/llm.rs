@@ -4,9 +4,30 @@ use std::future::Future;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+/// System prompt template used when document context is provided.
+///
+/// The `{document}` placeholder is replaced with the actual document content.
+const SYSTEM_PROMPT_TEMPLATE: &str = "\
+You are an AI assistant embedded in a markdown document. The user will ask \
+questions or request changes to the document below.
+
+Rules:
+- When answering questions, be concise and reference the document directly.
+- When asked to edit or rewrite content, output ONLY the replacement content. \
+Do not wrap it in explanations or repeat unchanged parts of the document.
+- Respond in the same language as the document unless asked otherwise.
+
+=== DOCUMENT ===
+{document}
+=== END DOCUMENT ===";
+
 /// Trait for LLM completion.
 pub trait LlmClient {
-    fn complete(&self, prompt: &str) -> impl Future<Output = Result<String, LlmError>> + Send;
+    fn complete(
+        &self,
+        prompt: &str,
+        document: Option<&str>,
+    ) -> impl Future<Output = Result<String, LlmError>> + Send;
 }
 
 /// Error type for LLM operations.
@@ -52,15 +73,25 @@ impl ChatClient {
 }
 
 impl LlmClient for ChatClient {
-    async fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+    async fn complete(&self, prompt: &str, document: Option<&str>) -> Result<String, LlmError> {
         let url = format!("{}/chat/completions", self.api_url.trim_end_matches('/'));
+
+        let system_prompt = document.map(build_system_prompt);
+        let mut messages = Vec::new();
+        if let Some(ref system) = system_prompt {
+            messages.push(Message {
+                role: "system",
+                content: system,
+            });
+        }
+        messages.push(Message {
+            role: "user",
+            content: prompt,
+        });
 
         let body = ChatRequest {
             model: &self.model,
-            messages: vec![Message {
-                role: "user",
-                content: prompt,
-            }],
+            messages,
         };
 
         let mut req = self.http.post(&url).json(&body);
@@ -94,6 +125,10 @@ impl LlmClient for ChatClient {
             .map(|c| c.message.content)
             .ok_or_else(|| LlmError::Parse("No choices in response".to_string()))
     }
+}
+
+fn build_system_prompt(document: &str) -> String {
+    SYSTEM_PROMPT_TEMPLATE.replace("{document}", document)
 }
 
 // -- Request/response types for OpenAI-compatible API --
@@ -164,7 +199,7 @@ mod tests {
         let client = test_client(&server.uri(), None);
 
         // When
-        let result = client.complete("Hello").await;
+        let result = client.complete("Hello", None).await;
 
         // Then
         assert_eq!(result.unwrap(), "Hello back!");
@@ -187,7 +222,7 @@ mod tests {
         let client = test_client(&server.uri(), None);
 
         // When
-        let result = client.complete("What is Rust?").await;
+        let result = client.complete("What is Rust?", None).await;
 
         // Then
         assert_eq!(result.unwrap(), "A language.");
@@ -209,7 +244,7 @@ mod tests {
         let client = test_client(&server.uri(), Some("secret-key-123"));
 
         // When
-        let result = client.complete("Hello").await;
+        let result = client.complete("Hello", None).await;
 
         // Then
         assert_eq!(result.unwrap(), "Authenticated!");
@@ -231,7 +266,7 @@ mod tests {
         let client = test_client(&server.uri(), None);
 
         // When
-        let result = client.complete("Hello").await;
+        let result = client.complete("Hello", None).await;
 
         // Then
         assert_eq!(result.unwrap(), "No auth needed.");
@@ -257,7 +292,7 @@ mod tests {
         let client = test_client(&server.uri(), None);
 
         // When
-        let result = client.complete("Hello").await;
+        let result = client.complete("Hello", None).await;
 
         // Then
         let err = result.unwrap_err();
@@ -278,7 +313,7 @@ mod tests {
         let client = test_client(&server.uri(), None);
 
         // When
-        let result = client.complete("Hello").await;
+        let result = client.complete("Hello", None).await;
 
         // Then
         let err = result.unwrap_err();
@@ -291,7 +326,7 @@ mod tests {
         let client = test_client("http://127.0.0.1:1", None);
 
         // When
-        let result = client.complete("Hello").await;
+        let result = client.complete("Hello", None).await;
 
         // Then
         let err = result.unwrap_err();
@@ -312,7 +347,7 @@ mod tests {
         let client = test_client(&server.uri(), None);
 
         // When
-        let result = client.complete("Hello").await;
+        let result = client.complete("Hello", None).await;
 
         // Then
         assert!(matches!(result.unwrap_err(), LlmError::Parse(_)));
@@ -333,12 +368,114 @@ mod tests {
         let client = test_client(&server.uri(), None);
 
         // When
-        let result = client.complete("Hello").await;
+        let result = client.complete("Hello", None).await;
 
         // Then
         let err = result.unwrap_err();
         assert!(matches!(err, LlmError::Parse(_)));
         assert!(err.to_string().contains("No choices"));
+    }
+
+    #[tokio::test]
+    async fn complete__should_send_system_message_when_document_provided() {
+        // Given
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_partial_json(serde_json::json!({
+                "messages": [
+                    { "role": "system" },
+                    { "role": "user", "content": "summarize this" }
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response("A summary.")))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri(), None);
+
+        // When
+        let result = client
+            .complete("summarize this", Some("# My Document\n\nSome content."))
+            .await;
+
+        // Then
+        assert_eq!(result.unwrap(), "A summary.");
+    }
+
+    #[tokio::test]
+    async fn complete__should_not_send_system_message_when_no_document() {
+        // Given
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_partial_json(serde_json::json!({
+                "messages": [
+                    { "role": "user", "content": "Hello" }
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response("Hi!")))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri(), None);
+
+        // When
+        let result = client.complete("Hello", None).await;
+
+        // Then
+        assert_eq!(result.unwrap(), "Hi!");
+        // Verify only one message was sent (no system message)
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "should only have the user message");
+        assert_eq!(messages[0]["role"], "user");
+    }
+
+    #[tokio::test]
+    async fn complete__should_include_document_content_in_system_message() {
+        // Given
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response("Done.")))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri(), None);
+
+        // When
+        client
+            .complete("edit this", Some("# Shopping List\n\n- milk\n- eggs\n"))
+            .await
+            .unwrap();
+
+        // Then — verify the system message contains the document
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        let system_content = messages[0]["content"].as_str().unwrap();
+        assert!(
+            system_content.contains("# Shopping List"),
+            "system message should contain the document content"
+        );
+        assert!(
+            system_content.contains("=== DOCUMENT ==="),
+            "system message should use the document delimiter"
+        );
+    }
+
+    #[test]
+    fn build_system_prompt__should_insert_document_content() {
+        // When
+        let result = build_system_prompt("# Hello\n\nWorld.");
+
+        // Then
+        assert!(result.contains("# Hello\n\nWorld."));
+        assert!(result.contains("=== DOCUMENT ==="));
+        assert!(result.contains("=== END DOCUMENT ==="));
     }
 
     /// Integration test that talks to a real LLM API.
@@ -376,7 +513,7 @@ mod tests {
 
         let client = ChatClient::new(api_url, model, api_key);
 
-        let result = client.complete("Reply with exactly: hello").await;
+        let result = client.complete("Reply with exactly: hello", None).await;
 
         let response = result.expect("LLM API call should succeed");
         assert!(!response.is_empty(), "Response should not be empty");
