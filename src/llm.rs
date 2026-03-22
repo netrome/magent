@@ -340,4 +340,46 @@ mod tests {
         assert!(matches!(err, LlmError::Parse(_)));
         assert!(err.to_string().contains("No choices"));
     }
+
+    /// Integration test that talks to a real LLM API.
+    ///
+    /// Ignored by default — run it explicitly with:
+    ///
+    /// ```sh
+    /// cargo nextest run complete__should_get_response_from_real_api --run-ignored only
+    /// ```
+    ///
+    /// ## Setup (Ollama)
+    ///
+    /// 1. Install Ollama: <https://ollama.com/download>
+    /// 2. Pull a small model: `ollama pull smollm2:135m`
+    /// 3. Ollama serves on `http://localhost:11434` by default — no further config needed.
+    ///
+    /// ## Overriding defaults
+    ///
+    /// Set environment variables to point at a different API:
+    ///
+    /// ```sh
+    /// MAGENT_TEST_API_URL=http://localhost:11434/v1 \
+    /// MAGENT_TEST_MODEL=smollm2:135m \
+    /// MAGENT_API_KEY=sk-... \
+    ///   cargo nextest run complete__should_get_response_from_real_api --run-ignored only
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn complete__should_get_response_from_real_api() {
+        let api_url = std::env::var("MAGENT_TEST_API_URL")
+            .unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
+        let model =
+            std::env::var("MAGENT_TEST_MODEL").unwrap_or_else(|_| "smollm2:135m".to_string());
+        let api_key = std::env::var("MAGENT_API_KEY").ok();
+
+        let client = ChatClient::new(api_url, model, api_key);
+
+        let result = client.complete("Reply with exactly: hello").await;
+
+        let response = result.expect("LLM API call should succeed");
+        assert!(!response.is_empty(), "Response should not be empty");
+        println!("LLM response: {response}");
+    }
 }
