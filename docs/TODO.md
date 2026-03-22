@@ -2,7 +2,7 @@
 
 ## Current
 
-- [ ] PR 1: Project skeleton + CLI (`clap`, arg parsing, signal handling)
+- [x] PR 1: Project skeleton + CLI (`clap`, arg parsing, signal handling)
 
 ## Up next
 
