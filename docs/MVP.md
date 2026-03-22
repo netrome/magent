@@ -1,0 +1,198 @@
+# MVP Design
+
+## Goal
+
+The smallest useful version of magent: a daemon that watches markdown files, finds `@magent` directives, calls an LLM, and writes responses back inline.
+
+## What's in the MVP
+
+1. **File watching** — monitor a directory (recursively) for markdown file changes.
+2. **Directive parsing** — find `@magent <prompt>` lines in changed files.
+3. **State tracking** — know which directives have been processed (skip if followed by a response block).
+4. **LLM call** — send the prompt to an OpenAI-compatible API (covers OpenAI, Ollama, and many others).
+5. **Response writing** — insert `<!-- magent:start -->..<!-- magent:end -->` after the directive.
+
+## What's NOT in the MVP
+
+- Scheduled/recurring directives (`in:`, `at:`)
+- Per-directive model selection (`model:claude`)
+- Document-edit mode (agent modifying surrounding content)
+- Config file (`.magent/config.toml`) — use CLI args + env vars instead
+- Persistent state file (`.magent/state.json`) — use response markers as implicit state
+
+## Architecture
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  File Watcher │────▶│   Parser     │────▶│  LLM Client  │────▶│    Writer    │
+│  (notify)     │     │              │     │  (reqwest)   │     │              │
+└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
+       │                    │                    │                    │
+   watches dir       finds @magent          calls API          writes response
+   for .md changes   directives,            with prompt        back into file
+                     skips processed                            between markers
+```
+
+### Core loop
+
+```
+loop {
+    receive file-change event
+    read the changed file
+    find all @magent directives
+    for each unprocessed directive:
+        extract prompt text
+        call LLM API
+        write response after directive using markers
+}
+```
+
+### Key design decisions
+
+**State is implicit, not explicit.** A directive is "processed" if it's followed by a `<!-- magent:start -->` block. No separate state file needed for the MVP. This keeps things simple and inspectable — `grep` tells you what's been handled.
+
+**OpenAI-compatible API only.** The OpenAI chat completions API is a de facto standard. Ollama, llama.cpp, vLLM, and many hosted providers implement it. One HTTP client covers all of these. No SDK dependency needed — just `reqwest` + `serde`.
+
+**No document context (yet).** The MVP sends only the directive text as the prompt. It does not include the surrounding document as context. This is a deliberate simplification — it's enough for standalone questions and keeps the LLM call simple. Document-aware mode is a natural follow-up.
+
+**Single-threaded processing.** Process one directive at a time. Simpler error handling, no concurrent file writes. Good enough for a personal knowledge base.
+
+## Configuration (MVP)
+
+CLI args and environment variables only:
+
+```
+magent watch <directory>
+
+Options:
+  --api-url <url>        LLM API base URL (default: http://localhost:11434/v1)
+  --model <name>         Model name (default: llama3)
+
+Environment:
+  MAGENT_API_KEY         API key (optional, for hosted providers)
+```
+
+Default to localhost Ollama so it works out of the box with zero config.
+
+## Directive format (MVP)
+
+```
+@magent <prompt text until end of line or next blank line>
+```
+
+Multi-line directive (prompt continues until a blank line):
+
+```
+@magent summarize the key points of this article
+and format them as bullet points
+```
+
+Processed state is indicated by the response block immediately following:
+
+```
+@magent why is the sky blue?
+
+<!-- magent:start -->
+Rayleigh scattering...
+<!-- magent:end -->
+```
+
+## Error handling
+
+If the LLM call fails, write the error into the response block so it's visible:
+
+```
+<!-- magent:start -->
+**Error:** Connection refused (http://localhost:11434/v1). Is Ollama running?
+<!-- magent:end -->
+```
+
+The user can delete the response block and save the file to retry.
+
+## Dependencies
+
+| Crate    | Purpose                        |
+|----------|--------------------------------|
+| tokio    | Async runtime, main event loop |
+| notify   | Cross-platform file watching   |
+| reqwest  | HTTP client for LLM API       |
+| serde    | JSON serialization             |
+| clap     | CLI argument parsing           |
+| toml     | (reserved for future config)   |
+
+`notify` is the one addition beyond the core deps listed in CLAUDE.md. It's the standard Rust crate for file system events and avoids polling. See ADR-001.
+
+## Implementation plan
+
+Six small, incremental PRs. Each one compiles and does something testable.
+
+### PR 1: Project skeleton + CLI
+
+Set up the binary with `clap`, parse CLI args, validate the watch directory exists.
+
+**Acceptance criteria:**
+- `magent watch ./notes` prints "Watching ./notes..." and exits cleanly on Ctrl+C.
+- `magent watch /nonexistent` prints an error and exits with code 1.
+- `magent --help` shows usage.
+
+### PR 2: File watcher
+
+Add `notify` to watch the directory for `.md` file changes. Log events to stdout.
+
+**Acceptance criteria:**
+- Modifying a `.md` file in the watched directory prints the event and file path.
+- Non-`.md` file changes are ignored.
+- Watcher handles subdirectories.
+
+### PR 3: Directive parser
+
+Parse markdown files to find `@magent` directives. Identify which are unprocessed (not followed by a response block).
+
+**Acceptance criteria:**
+- Given a file with `@magent hello`, parser returns one unprocessed directive with prompt "hello" and its byte position.
+- Given a file where the directive is followed by `<!-- magent:start -->...<!-- magent:end -->`, parser returns zero unprocessed directives.
+- Multi-line prompts (until blank line) are captured correctly.
+- Unit tests cover edge cases: multiple directives, mixed processed/unprocessed, directives inside code blocks (should be ignored).
+
+### PR 4: LLM client
+
+HTTP client that sends a prompt to an OpenAI-compatible chat completions endpoint and returns the response text.
+
+**Acceptance criteria:**
+- Sends a well-formed `POST /chat/completions` request with the prompt as a user message.
+- Returns the assistant's response text.
+- Handles errors (connection refused, 4xx, 5xx) with clear error messages.
+- API key is read from env var and sent as Bearer token when present.
+- Unit tests use a mock HTTP server (e.g., `wiremock`).
+
+### PR 5: Response writer
+
+Write the LLM response back into the markdown file after the directive, wrapped in markers.
+
+**Acceptance criteria:**
+- Given a file and a directive location, inserts `<!-- magent:start -->\nresponse\n<!-- magent:end -->` after the directive.
+- Preserves the rest of the file content exactly.
+- Handles the file already having other content after the directive.
+- Integration test: write directive to a temp file, run writer, read file back and verify markers and content.
+
+### PR 6: Wire it all together
+
+Connect watcher → parser → LLM client → writer into the main loop.
+
+**Acceptance criteria:**
+- End-to-end: write `@magent hello` to a file in the watched directory, observe the response block appear in the file.
+- Already-processed directives are skipped.
+- LLM errors are written as error responses.
+- The daemon runs until Ctrl+C.
+- A basic integration test exercises the full loop with a mock LLM server.
+
+## Follow-ups (post-MVP)
+
+These are explicitly out of scope but noted for future planning:
+
+- Config file (`.magent/config.toml`)
+- Scheduled directives (`in:`, `at:`)
+- Document context — send surrounding markdown as context to the LLM
+- Per-directive model selection
+- Concurrent directive processing
+- File locking / conflict handling
