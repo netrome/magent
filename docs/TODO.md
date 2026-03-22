@@ -1,12 +1,15 @@
 # TODO
 
-## Current
+## Done
 
 - [x] PR 1: Project skeleton + CLI (`clap`, arg parsing, signal handling)
 
+## Current
+
+- [x] PR 2: File watcher (`notify`, watch directory for `.md` changes)
+
 ## Up next
 
-- [ ] PR 2: File watcher (`notify`, watch directory for `.md` changes)
 - [ ] PR 3: Directive parser (find `@magent` directives, detect processed state)
 - [ ] PR 4: LLM client (OpenAI-compatible chat completions via `reqwest`)
 - [ ] PR 5: Response writer (insert response markers into markdown files)

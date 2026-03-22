@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+notify = "8.2.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
 tempfile = "3"

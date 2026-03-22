@@ -1,6 +1,9 @@
+pub mod watcher;
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use tokio::sync::mpsc;
 
 #[derive(Parser)]
 #[command(name = "magent", about = "A markdown-native AI agent daemon")]
@@ -36,12 +39,28 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("{} is not a directory", directory.display()).into());
             }
 
+            let (tx, rx) = mpsc::channel(100);
+            let _watcher = watcher::start(&directory, tx)?;
+
             println!("Watching {}...", directory.display());
 
-            tokio::signal::ctrl_c().await?;
-            println!("\nShutting down.");
+            process_events(rx).await;
 
             Ok(())
+        }
+    }
+}
+
+async fn process_events(mut rx: mpsc::Receiver<PathBuf>) {
+    loop {
+        tokio::select! {
+            Some(path) = rx.recv() => {
+                println!("Changed: {}", path.display());
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nShutting down.");
+                break;
+            }
         }
     }
 }
