@@ -38,7 +38,9 @@ pub fn start(
 fn is_content_change(kind: &EventKind) -> bool {
     matches!(
         kind,
-        EventKind::Create(_) | EventKind::Modify(notify::event::ModifyKind::Data(_))
+        EventKind::Create(_)
+            | EventKind::Modify(notify::event::ModifyKind::Data(_))
+            | EventKind::Modify(notify::event::ModifyKind::Name(_))
     )
 }
 
@@ -83,6 +85,24 @@ mod tests {
         std::fs::write(&md_path, "seen").unwrap();
 
         // Then — only the .md file should come through
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+        assert_eq!(event.unwrap().unwrap(), md_path);
+    }
+
+    #[tokio::test]
+    async fn start__should_detect_atomic_writes() {
+        // Given — simulates how mindex saves files (write tmp + rename)
+        let dir = tempfile::tempdir().unwrap();
+        let tmp_path = dir.path().join(".test.md.tmp");
+        let md_path = dir.path().join("test.md");
+        let (tx, mut rx) = mpsc::channel(16);
+        let _watcher = start(dir.path(), tx).unwrap();
+
+        // When
+        std::fs::write(&tmp_path, "atomic content").unwrap();
+        std::fs::rename(&tmp_path, &md_path).unwrap();
+
+        // Then
         let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
         assert_eq!(event.unwrap().unwrap(), md_path);
     }
