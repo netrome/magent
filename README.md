@@ -114,6 +114,51 @@ Magent runs as a persistent background process:
 - Writes responses back into the originating file
 - All activity is visible as file changes
 
+## Quick start (Ollama)
+
+1. Install and start [Ollama](https://ollama.com/download), then pull a model:
+
+```sh
+ollama pull llama3
+```
+
+2. Build and run magent, pointing it at a directory of markdown files:
+
+```sh
+cargo run -- watch ./notes
+```
+
+This uses Ollama's default endpoint (`http://localhost:11434/v1`) and `llama3`. To use a different model or API:
+
+```sh
+cargo run -- watch ./notes --model mistral --api-url http://localhost:11434/v1
+```
+
+For hosted providers that require an API key:
+
+```sh
+export MAGENT_API_KEY=sk-...
+cargo run -- watch ./notes --api-url https://api.openai.com/v1 --model gpt-4o
+```
+
+3. Add a directive to any `.md` file in the watched directory and save:
+
+```markdown
+@magent what is the capital of France?
+```
+
+Magent picks it up and writes the response inline:
+
+```markdown
+@magent what is the capital of France?
+
+<!-- magent:start -->
+Paris.
+<!-- magent:end -->
+```
+
+Press `Ctrl+C` to stop the daemon.
+
 ## Principles
 
 - **Markdown is the interface.** No GUI, no database. Files in, files out.
