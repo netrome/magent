@@ -15,12 +15,18 @@
 
 ## Current
 
+### Inline document editing
+- [x] PR 1: Migrate response markers to custom elements (`<magent-response>`)
+- [ ] PR 2: Edit block parser (`edit.rs`)
+- [ ] PR 3: Edit application logic
+- [ ] PR 4: Wire edit proposals into the processing loop
+- [ ] PR 5: Edit acceptance processing
+
 ## Up next
 
 ## Post-MVP
 
 - [ ] Config file (`.magent/config.toml`)
 - [ ] Scheduled directives (`in:`, `at:`)
-- [ ] Inline document editing (model modifies content outside response markers)
 - [ ] Per-directive model selection
 - [ ] Concurrent directive processing

@@ -11,8 +11,8 @@ pub struct Directive {
 /// Parse all `@magent` directives from markdown content.
 ///
 /// Scans each line for `@magent` mentions, extracts the prompt text,
-/// and checks whether a `<!-- magent:start -->` response block follows
-/// before the next directive.
+/// and checks whether a `<magent-response>` block follows before the
+/// next directive.
 pub fn parse_directives(content: &str) -> Vec<Directive> {
     let lines: Vec<&str> = content.lines().collect();
     let mut directives = Vec::new();
@@ -56,12 +56,12 @@ fn extract_prompt(line: &str) -> Option<String> {
     Some(prompt.to_string())
 }
 
-/// Check whether a `<!-- magent:start -->` response block appears
-/// in `lines[from..]` before the next `@magent` directive.
+/// Check whether a `<magent-response>` block appears in `lines[from..]`
+/// before the next `@magent` directive.
 fn has_response_block(lines: &[&str], from: usize) -> bool {
     for line in &lines[from..] {
         let trimmed = line.trim();
-        if trimmed == "<!-- magent:start -->" {
+        if trimmed == "<magent-response>" {
             return true;
         }
         if extract_prompt(line).is_some() {
@@ -96,9 +96,9 @@ mod tests {
         // Given
         let content = "@magent why is the sky blue?\n\
                         \n\
-                        <!-- magent:start -->\n\
+                        <magent-response>\n\
                         Because of Rayleigh scattering.\n\
-                        <!-- magent:end -->\n";
+                        </magent-response>\n";
 
         // When
         let directives = parse_directives(content);
@@ -125,9 +125,9 @@ mod tests {
         // Given
         let content = "@magent first question\n\
                         \n\
-                        <!-- magent:start -->\n\
+                        <magent-response>\n\
                         First answer.\n\
-                        <!-- magent:end -->\n\
+                        </magent-response>\n\
                         \n\
                         @magent second question\n";
 
@@ -186,9 +186,9 @@ mod tests {
         let content = "@magent why is the sky blue?\n\
                         \n\
                         \n\
-                        <!-- magent:start -->\n\
+                        <magent-response>\n\
                         Rayleigh scattering.\n\
-                        <!-- magent:end -->\n";
+                        </magent-response>\n";
 
         // When
         let directives = parse_directives(content);
@@ -205,9 +205,9 @@ mod tests {
                         \n\
                         @magent second question\n\
                         \n\
-                        <!-- magent:start -->\n\
+                        <magent-response>\n\
                         Answer to second.\n\
-                        <!-- magent:end -->\n";
+                        </magent-response>\n";
 
         // When
         let directives = parse_directives(content);

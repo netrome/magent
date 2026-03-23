@@ -17,7 +17,7 @@ The daemon is a single async task that receives file-change events and processes
 
 ### State tracking: implicit via response markers
 
-A directive is considered "processed" if it is followed by a `<!-- magent:start -->` block in the same file. No separate state file.
+A directive is considered "processed" if it is followed by a `<magent-response>` block in the same file. No separate state file.
 
 **Why:** This keeps state inspectable (it's right there in the markdown), avoids sync issues between a state file and the actual files, and means the user can "retry" a directive by simply deleting the response block.
 

@@ -238,9 +238,9 @@ mod tests {
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("<!-- magent:start -->"));
+        assert!(content.contains("<magent-response>"));
         assert!(content.contains("Rayleigh scattering."));
-        assert!(content.contains("<!-- magent:end -->"));
+        assert!(content.contains("</magent-response>"));
     }
 
     #[tokio::test]
@@ -256,10 +256,10 @@ mod tests {
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("<!-- magent:start -->"));
+        assert!(content.contains("<magent-response>"));
         assert!(content.contains("**Error:**"));
         assert!(content.contains("Connection refused"));
-        assert!(content.contains("<!-- magent:end -->"));
+        assert!(content.contains("</magent-response>"));
     }
 
     #[tokio::test]
@@ -269,7 +269,7 @@ mod tests {
         let path = dir.path().join("test.md");
         std::fs::write(
             &path,
-            "@magent hello\n\n<!-- magent:start -->\nHi!\n<!-- magent:end -->\n",
+            "@magent hello\n\n<magent-response>\nHi!\n</magent-response>\n",
         )
         .unwrap();
         let client = SpyLlm {

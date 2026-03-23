@@ -70,12 +70,12 @@ pub fn insert_response(content: &str, prompt: &str, response: &str) -> Option<St
 
         if i == insert_after {
             result.push('\n');
-            result.push_str("<!-- magent:start -->\n");
+            result.push_str("<magent-response>\n");
             result.push_str(response);
             if !response.is_empty() && !response.ends_with('\n') {
                 result.push('\n');
             }
-            result.push_str("<!-- magent:end -->\n");
+            result.push_str("</magent-response>\n");
         }
     }
 
@@ -101,9 +101,9 @@ mod tests {
             result,
             "@magent why is the sky blue?\n\
              \n\
-             <!-- magent:start -->\n\
+             <magent-response>\n\
              Rayleigh scattering.\n\
-             <!-- magent:end -->\n"
+             </magent-response>\n"
         );
     }
 
@@ -123,9 +123,9 @@ mod tests {
              \n\
              @magent summarize this\n\
              \n\
-             <!-- magent:start -->\n\
+             <magent-response>\n\
              Summary here.\n\
-             <!-- magent:end -->\n\
+             </magent-response>\n\
              \n\
              Some other content.\n"
         );
@@ -147,9 +147,9 @@ mod tests {
              \n\
              @magent second question\n\
              \n\
-             <!-- magent:start -->\n\
+             <magent-response>\n\
              Answer to second.\n\
-             <!-- magent:end -->\n"
+             </magent-response>\n"
         );
     }
 
@@ -169,16 +169,16 @@ mod tests {
              \n\
              @magent explain this\n\
              \n\
-             <!-- magent:start -->\n\
+             <magent-response>\n\
              Explanation.\n\
-             <!-- magent:end -->\n"
+             </magent-response>\n"
         );
     }
 
     #[test]
     fn insert_response__should_skip_already_processed_directive() {
         // Given
-        let content = "@magent hello\n\n<!-- magent:start -->\nHi!\n<!-- magent:end -->\n";
+        let content = "@magent hello\n\n<magent-response>\nHi!\n</magent-response>\n";
 
         // When
         let result = insert_response(content, "hello", "New response");
@@ -213,11 +213,11 @@ mod tests {
             result,
             "@magent list three things\n\
              \n\
-             <!-- magent:start -->\n\
+             <magent-response>\n\
              1. One\n\
              2. Two\n\
              3. Three\n\
-             <!-- magent:end -->\n"
+             </magent-response>\n"
         );
     }
 
@@ -226,9 +226,9 @@ mod tests {
         // Given — two identical prompts, first is processed
         let content = "@magent hello\n\
                         \n\
-                        <!-- magent:start -->\n\
+                        <magent-response>\n\
                         Hi!\n\
-                        <!-- magent:end -->\n\
+                        </magent-response>\n\
                         \n\
                         @magent hello\n";
         let response = "Hello again!";
@@ -237,7 +237,7 @@ mod tests {
         let result = insert_response(content, "hello", response).unwrap();
 
         // Then — response is inserted after the second (unprocessed) directive
-        assert!(result.contains("@magent hello\n\n<!-- magent:start -->\nHello again!"));
+        assert!(result.contains("@magent hello\n\n<magent-response>\nHello again!"));
     }
 
     #[test]
@@ -252,9 +252,9 @@ mod tests {
 
         // Then
         let result = std::fs::read_to_string(&path).unwrap();
-        assert!(result.contains("<!-- magent:start -->"));
+        assert!(result.contains("<magent-response>"));
         assert!(result.contains("Hi there!"));
-        assert!(result.contains("<!-- magent:end -->"));
+        assert!(result.contains("</magent-response>"));
     }
 
     #[test]
