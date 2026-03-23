@@ -17,36 +17,38 @@ A directive is an `@magent` mention anywhere in a markdown file. When magent see
 ```markdown
 @magent why is the sky blue?
 
-<!-- magent:start -->
+<magent-response>
 Rayleigh scattering — shorter (blue) wavelengths of sunlight are
 scattered more by the atmosphere than longer wavelengths.
-<!-- magent:end -->
+</magent-response>
 ```
 
 ### Document edit
 
+When a directive asks for changes, magent proposes edits using search-and-replace blocks. You review them, accept the ones you want, and magent applies them to the document.
+
 ```markdown
-# Shopping list
+# Links
 
-- ~~eggs~~
-- milk
-- bread
-- ~~butter~~
+- [Rust](htps://rust-lang.org)
+- [Tokio](htps://tokio.rs)
 
-@magent clean up this list and add ingredients for tacos
+@magent fix the broken URLs above
 
-<!-- magent:start -->
-Removed completed items. Added taco ingredients:
-<!-- magent:end -->
-
-- milk
-- bread
-- ground beef
-- tortillas
-- salsa
-- cheese
-- lime
+<magent-response>
+Fixed 2 broken URLs (htps → https):
+<magent-edit status="proposed">
+<magent-search>- [Rust](htps://rust-lang.org)</magent-search>
+<magent-replace>- [Rust](https://rust-lang.org)</magent-replace>
+</magent-edit>
+<magent-edit status="proposed">
+<magent-search>- [Tokio](htps://tokio.rs)</magent-search>
+<magent-replace>- [Tokio](https://tokio.rs)</magent-replace>
+</magent-edit>
+</magent-response>
 ```
+
+Change `status="proposed"` to `status="accepted"` on the edits you want, and magent applies them on the next save. Edits you don't want can simply be deleted.
 
 ### Scheduled / recurring
 
@@ -64,18 +66,18 @@ Magent processes this when the time is due. For recurring tasks, the agent re-sc
 
 ## Response markers
 
-Magent wraps its output in HTML comments to track what has been processed:
+Magent wraps its output in custom elements to track what has been processed:
 
 ```markdown
-<!-- magent:start -->
+<magent-response>
 Agent response here.
-<!-- magent:end -->
+</magent-response>
 ```
 
 This allows magent to:
 - Know which directives have already been handled (skip if followed by a response block)
 - Clearly delimit agent-written content from your own writing
-- Stay invisible in most markdown renderers
+- Use a single `magent-*` tag vocabulary for responses, edits, and future features
 
 ## File structure
 
@@ -152,9 +154,9 @@ Magent picks it up and writes the response inline:
 ```markdown
 @magent what is the capital of France?
 
-<!-- magent:start -->
+<magent-response>
 Paris.
-<!-- magent:end -->
+</magent-response>
 ```
 
 Press `Ctrl+C` to stop the daemon.
