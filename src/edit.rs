@@ -120,6 +120,86 @@ pub fn parse_edit_blocks(response_content: &str) -> Vec<PendingEdit> {
         .collect()
 }
 
+/// Process accepted edits in file content: apply edits and update statuses.
+///
+/// Finds `<magent-edit status="accepted">` blocks inside `<magent-response>` sections,
+/// applies the edits to document content (outside response blocks), and updates each
+/// edit's status to `applied` or `failed`.
+///
+/// Returns `None` if no accepted edits are found.
+pub fn process_accepted_edits(content: &str) -> Option<String> {
+    let mut segments = split_into_segments(content);
+
+    // Collect accepted edits with their response segment index
+    let mut accepted: Vec<(usize, Edit)> = Vec::new();
+    for (i, seg) in segments.iter().enumerate() {
+        if let Segment::Response(resp) = seg {
+            for pending in parse_edit_blocks(resp) {
+                if pending.status == EditStatus::Accepted {
+                    accepted.push((
+                        i,
+                        Edit {
+                            search: pending.search,
+                            replace: pending.replace,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    if accepted.is_empty() {
+        return None;
+    }
+
+    // Apply edits to document segments only (avoids matching inside <magent-search> tags)
+    let mut results: Vec<EditResult> = Vec::with_capacity(accepted.len());
+    for (_seg_idx, edit) in &accepted {
+        let mut applied = false;
+        for seg in segments.iter_mut() {
+            if let Segment::Document(doc) = seg
+                && !edit.search.is_empty()
+                && doc.contains(&edit.search)
+            {
+                *doc = doc.replacen(&edit.search, &edit.replace, 1);
+                applied = true;
+                break;
+            }
+        }
+        results.push(if applied {
+            EditResult::Applied
+        } else {
+            EditResult::Failed
+        });
+    }
+
+    // Update status attributes in response segments.
+    // Uses replacen(..., 1) so each call updates the next "accepted" occurrence in order.
+    for ((seg_idx, _edit), result) in accepted.iter().zip(results.iter()) {
+        let new_status = match result {
+            EditResult::Applied => "applied",
+            EditResult::Failed => "failed",
+        };
+        if let Segment::Response(ref mut resp) = segments[*seg_idx] {
+            *resp = resp.replacen(
+                "status=\"accepted\"",
+                &format!("status=\"{new_status}\""),
+                1,
+            );
+        }
+    }
+
+    let result: String = segments
+        .iter()
+        .map(|s| match s {
+            Segment::Document(d) => d.as_str(),
+            Segment::Response(r) => r.as_str(),
+        })
+        .collect();
+
+    Some(result)
+}
+
 struct RawEditBlock {
     search: String,
     replace: String,
@@ -229,6 +309,45 @@ fn parse_status(s: &str) -> Option<EditStatus> {
         "failed" => Some(EditStatus::Failed),
         _ => None,
     }
+}
+
+enum Segment {
+    Document(String),
+    Response(String),
+}
+
+/// Split file content into alternating document and response segments.
+fn split_into_segments(content: &str) -> Vec<Segment> {
+    let mut segments = Vec::new();
+    let mut pos = 0;
+    let open_tag = "<magent-response>";
+    let close_tag = "</magent-response>";
+
+    while let Some(start_offset) = content[pos..].find(open_tag) {
+        let block_start = pos + start_offset;
+
+        if block_start > pos {
+            segments.push(Segment::Document(content[pos..block_start].to_string()));
+        }
+
+        let after_open = block_start + open_tag.len();
+        if let Some(close_offset) = content[after_open..].find(close_tag) {
+            let block_end = after_open + close_offset + close_tag.len();
+            segments.push(Segment::Response(
+                content[block_start..block_end].to_string(),
+            ));
+            pos = block_end;
+        } else {
+            // Unclosed response block — treat remaining content as document
+            break;
+        }
+    }
+
+    if pos < content.len() {
+        segments.push(Segment::Document(content[pos..].to_string()));
+    }
+
+    segments
 }
 
 #[cfg(test)]
@@ -893,5 +1012,181 @@ new line 2</magent-replace>
         // Then
         assert_eq!(result, "Hello world!");
         assert_eq!(results, vec![EditResult::Failed, EditResult::Failed]);
+    }
+
+    // --- process_accepted_edits ---
+
+    #[test]
+    fn process_accepted_edits__should_apply_edit_and_update_status() {
+        // Given
+        let content = "\
+# Links
+
+- [Rust](htps://rust-lang.org)
+
+@magent fix the URL
+
+<magent-response>
+Fixed:
+<magent-edit status=\"accepted\">
+<magent-search>htps://rust-lang.org</magent-search>
+<magent-replace>https://rust-lang.org</magent-replace>
+</magent-edit>
+</magent-response>
+";
+
+        // When
+        let result = process_accepted_edits(content).unwrap();
+
+        // Then — document content updated
+        assert!(result.contains("- [Rust](https://rust-lang.org)"));
+        assert!(!result.contains("- [Rust](htps://rust-lang.org)"));
+        // Status updated
+        assert!(result.contains("status=\"applied\""));
+        assert!(!result.contains("status=\"accepted\""));
+    }
+
+    #[test]
+    fn process_accepted_edits__should_return_none_when_no_accepted_edits() {
+        // Given — only proposed edits
+        let content = "\
+@magent fix
+
+<magent-response>
+<magent-edit status=\"proposed\">
+<magent-search>old</magent-search>
+<magent-replace>new</magent-replace>
+</magent-edit>
+</magent-response>
+";
+
+        // When
+        let result = process_accepted_edits(content);
+
+        // Then
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn process_accepted_edits__should_set_failed_when_search_not_found() {
+        // Given — search text doesn't exist in the document
+        let content = "\
+Some document content.
+
+@magent fix
+
+<magent-response>
+<magent-edit status=\"accepted\">
+<magent-search>nonexistent text</magent-search>
+<magent-replace>replacement</magent-replace>
+</magent-edit>
+</magent-response>
+";
+
+        // When
+        let result = process_accepted_edits(content).unwrap();
+
+        // Then — document unchanged, status is failed
+        assert!(result.contains("Some document content."));
+        assert!(result.contains("status=\"failed\""));
+        assert!(!result.contains("status=\"accepted\""));
+    }
+
+    #[test]
+    fn process_accepted_edits__should_handle_partial_success() {
+        // Given — first edit matches, second doesn't
+        let content = "\
+Hello world!
+
+@magent fix
+
+<magent-response>
+<magent-edit status=\"accepted\">
+<magent-search>Hello</magent-search>
+<magent-replace>Hi</magent-replace>
+</magent-edit>
+<magent-edit status=\"accepted\">
+<magent-search>nonexistent</magent-search>
+<magent-replace>gone</magent-replace>
+</magent-edit>
+</magent-response>
+";
+
+        // When
+        let result = process_accepted_edits(content).unwrap();
+
+        // Then
+        assert!(result.contains("Hi world!"));
+        assert!(result.contains("status=\"applied\""));
+        assert!(result.contains("status=\"failed\""));
+        assert!(!result.contains("status=\"accepted\""));
+    }
+
+    #[test]
+    fn process_accepted_edits__should_not_modify_proposed_edits() {
+        // Given — mix of proposed and accepted
+        let content = "\
+old text here
+
+@magent fix
+
+<magent-response>
+<magent-edit status=\"proposed\">
+<magent-search>should stay proposed</magent-search>
+<magent-replace>new</magent-replace>
+</magent-edit>
+<magent-edit status=\"accepted\">
+<magent-search>old text</magent-search>
+<magent-replace>new text</magent-replace>
+</magent-edit>
+</magent-response>
+";
+
+        // When
+        let result = process_accepted_edits(content).unwrap();
+
+        // Then
+        assert!(result.contains("new text here"));
+        assert!(result.contains("status=\"proposed\""));
+        assert!(result.contains("status=\"applied\""));
+        assert!(!result.contains("status=\"accepted\""));
+    }
+
+    #[test]
+    fn process_accepted_edits__should_handle_content_after_response_block() {
+        // Given — content to edit appears AFTER the response block
+        let content = "\
+@magent fix below
+
+<magent-response>
+<magent-edit status=\"accepted\">
+<magent-search>text below the response</magent-search>
+<magent-replace>fixed text</magent-replace>
+</magent-edit>
+</magent-response>
+
+text below the response
+";
+
+        // When
+        let result = process_accepted_edits(content).unwrap();
+
+        // Then — document content (after response) is updated, not the search tag
+        assert!(result.contains("\nfixed text\n"));
+        assert!(result.contains("status=\"applied\""));
+        // The <magent-search> tag should still contain the original search text
+        assert!(result.contains("<magent-search>text below the response</magent-search>"));
+    }
+
+    #[test]
+    fn process_accepted_edits__should_return_none_for_no_response_blocks() {
+        // Given
+        let content = "Just a regular document.\n\n@magent hello\n";
+
+        // When
+        let result = process_accepted_edits(content);
+
+        // Then
+        assert!(result.is_none());
     }
 }

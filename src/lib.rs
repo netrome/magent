@@ -93,6 +93,16 @@ async fn process_file(path: &Path, client: &impl LlmClient) {
         }
     };
 
+    // Handle accepted edits before processing new directives.
+    // The file write triggers the watcher again for any remaining work.
+    if let Some(updated) = edit::process_accepted_edits(&content) {
+        println!("Applying accepted edits in {}", path.display());
+        if let Err(e) = std::fs::write(path, updated) {
+            eprintln!("Failed to write edits: {e}");
+        }
+        return;
+    }
+
     let directives = parser::parse_directives(&content);
 
     for directive in directives.iter().filter(|d| !d.processed) {
@@ -429,5 +439,107 @@ Fixed the URL:
         assert_eq!(blocks[0].status, edit::EditStatus::Proposed);
         assert_eq!(blocks[0].search, "old text");
         assert_eq!(blocks[0].replace, "new text");
+    }
+
+    #[tokio::test]
+    async fn process_file__should_apply_accepted_edits() {
+        // Given — file with an accepted edit (simulates user accepting a proposal)
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(
+            &path,
+            "\
+# Links
+
+- [Rust](htps://rust-lang.org)
+
+@magent fix the URL
+
+<magent-response>
+Fixed:
+<magent-edit status=\"accepted\">
+<magent-search>htps://rust-lang.org</magent-search>
+<magent-replace>https://rust-lang.org</magent-replace>
+</magent-edit>
+</magent-response>
+",
+        )
+        .unwrap();
+        let client = SpyLlm {
+            response: "Should not be called".to_string(),
+            call_count: AtomicUsize::new(0),
+        };
+
+        // When
+        process_file(&path, &client).await;
+
+        // Then — edit applied, LLM not called
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("- [Rust](https://rust-lang.org)"),
+            "document should have the corrected URL"
+        );
+        assert!(
+            content.contains("status=\"applied\""),
+            "status should be updated to applied"
+        );
+        assert!(
+            !content.contains("status=\"accepted\""),
+            "no accepted statuses should remain"
+        );
+        assert_eq!(
+            client.call_count.load(Ordering::Relaxed),
+            0,
+            "LLM should not be called when processing accepted edits"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_file__full_propose_accept_apply_lifecycle() {
+        // Given — start with a document and directive
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(
+            &path,
+            "# Links\n\n- [Rust](htps://rust-lang.org)\n\n@magent fix the broken URL\n",
+        )
+        .unwrap();
+
+        let llm_response = "\
+Fixed the URL:
+<magent-edit>
+<magent-search>htps://rust-lang.org</magent-search>
+<magent-replace>https://rust-lang.org</magent-replace>
+</magent-edit>";
+        let client = FakeLlm(llm_response.to_string());
+
+        // Step 1: Process directive — should propose edits
+        process_file(&path, &client).await;
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("status=\"proposed\""));
+        assert!(
+            content.contains("- [Rust](htps://rust-lang.org)"),
+            "document unchanged after proposal"
+        );
+
+        // Step 2: Simulate user accepting the edit
+        let accepted = content.replace("status=\"proposed\"", "status=\"accepted\"");
+        std::fs::write(&path, &accepted).unwrap();
+
+        // Step 3: Process acceptance — should apply edits
+        process_file(&path, &client).await;
+        let final_content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            final_content.contains("- [Rust](https://rust-lang.org)"),
+            "document should have the corrected URL"
+        );
+        assert!(
+            final_content.contains("status=\"applied\""),
+            "status should be applied"
+        );
+        assert!(
+            !final_content.contains("status=\"accepted\""),
+            "no accepted statuses should remain"
+        );
     }
 }

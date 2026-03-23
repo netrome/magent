@@ -20,7 +20,7 @@
 - [x] PR 2: Edit block parser (`edit.rs`)
 - [x] PR 3: Edit application logic
 - [x] PR 4: Wire edit proposals into the processing loop
-- [ ] PR 5: Edit acceptance processing
+- [x] PR 5: Edit acceptance processing
 
 ## Up next
 
