@@ -29,6 +29,34 @@ pub fn parse_edits(response: &str) -> (Vec<Edit>, String) {
     (edits, remaining)
 }
 
+/// Result of applying a single edit.
+#[derive(Debug, PartialEq)]
+pub enum EditResult {
+    Applied,
+    Failed,
+}
+
+/// Apply a sequence of edits to document content.
+///
+/// Returns the modified content and a result per edit (in the same order).
+/// Each edit replaces the first occurrence of `search` with `replace`.
+/// Failed edits (search text not found) do not prevent other edits from applying.
+pub fn apply_edits(content: &str, edits: &[Edit]) -> (String, Vec<EditResult>) {
+    let mut result = content.to_string();
+    let mut results = Vec::with_capacity(edits.len());
+
+    for edit in edits {
+        if !edit.search.is_empty() && result.contains(&edit.search) {
+            result = result.replacen(&edit.search, &edit.replace, 1);
+            results.push(EditResult::Applied);
+        } else {
+            results.push(EditResult::Failed);
+        }
+    }
+
+    (result, results)
+}
+
 /// Status of an edit block in the document.
 #[derive(Debug, PartialEq)]
 pub enum EditStatus {
@@ -557,5 +585,200 @@ new line 2</magent-replace>
 
         // Then
         assert!(blocks.is_empty());
+    }
+
+    // --- apply_edits ---
+
+    #[test]
+    fn apply_edits__should_apply_single_edit() {
+        // Given
+        let content = "Hello world!";
+        let edits = vec![Edit {
+            search: "world".to_string(),
+            replace: "Rust".to_string(),
+        }];
+
+        // When
+        let (result, results) = apply_edits(content, &edits);
+
+        // Then
+        assert_eq!(result, "Hello Rust!");
+        assert_eq!(results, vec![EditResult::Applied]);
+    }
+
+    #[test]
+    fn apply_edits__should_apply_multiple_edits() {
+        // Given
+        let content = "- [Rust](htps://rust-lang.org)\n- [Tokio](htps://tokio.rs)\n";
+        let edits = vec![
+            Edit {
+                search: "htps://rust-lang.org".to_string(),
+                replace: "https://rust-lang.org".to_string(),
+            },
+            Edit {
+                search: "htps://tokio.rs".to_string(),
+                replace: "https://tokio.rs".to_string(),
+            },
+        ];
+
+        // When
+        let (result, results) = apply_edits(content, &edits);
+
+        // Then
+        assert_eq!(
+            result,
+            "- [Rust](https://rust-lang.org)\n- [Tokio](https://tokio.rs)\n"
+        );
+        assert_eq!(results, vec![EditResult::Applied, EditResult::Applied]);
+    }
+
+    #[test]
+    fn apply_edits__should_report_failure_when_search_not_found() {
+        // Given
+        let content = "Hello world!";
+        let edits = vec![Edit {
+            search: "goodbye".to_string(),
+            replace: "hi".to_string(),
+        }];
+
+        // When
+        let (result, results) = apply_edits(content, &edits);
+
+        // Then
+        assert_eq!(result, "Hello world!");
+        assert_eq!(results, vec![EditResult::Failed]);
+    }
+
+    #[test]
+    fn apply_edits__should_continue_after_failed_edit() {
+        // Given
+        let content = "Hello world!";
+        let edits = vec![
+            Edit {
+                search: "nonexistent".to_string(),
+                replace: "gone".to_string(),
+            },
+            Edit {
+                search: "world".to_string(),
+                replace: "Rust".to_string(),
+            },
+        ];
+
+        // When
+        let (result, results) = apply_edits(content, &edits);
+
+        // Then
+        assert_eq!(result, "Hello Rust!");
+        assert_eq!(results, vec![EditResult::Failed, EditResult::Applied]);
+    }
+
+    #[test]
+    fn apply_edits__should_replace_first_occurrence_only() {
+        // Given
+        let content = "foo bar foo bar foo";
+        let edits = vec![Edit {
+            search: "foo".to_string(),
+            replace: "baz".to_string(),
+        }];
+
+        // When
+        let (result, results) = apply_edits(content, &edits);
+
+        // Then
+        assert_eq!(result, "baz bar foo bar foo");
+        assert_eq!(results, vec![EditResult::Applied]);
+    }
+
+    #[test]
+    fn apply_edits__should_handle_empty_edit_list() {
+        // Given
+        let content = "Hello world!";
+
+        // When
+        let (result, results) = apply_edits(content, &[]);
+
+        // Then
+        assert_eq!(result, "Hello world!");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn apply_edits__should_handle_empty_replace_as_deletion() {
+        // Given
+        let content = "Hello cruel world!";
+        let edits = vec![Edit {
+            search: "cruel ".to_string(),
+            replace: "".to_string(),
+        }];
+
+        // When
+        let (result, results) = apply_edits(content, &edits);
+
+        // Then
+        assert_eq!(result, "Hello world!");
+        assert_eq!(results, vec![EditResult::Applied]);
+    }
+
+    #[test]
+    fn apply_edits__should_fail_on_empty_search() {
+        // Given
+        let content = "Hello world!";
+        let edits = vec![Edit {
+            search: "".to_string(),
+            replace: "inserted".to_string(),
+        }];
+
+        // When
+        let (_result, results) = apply_edits(content, &edits);
+
+        // Then
+        assert_eq!(results, vec![EditResult::Failed]);
+    }
+
+    #[test]
+    fn apply_edits__should_apply_in_order_so_earlier_edits_affect_later_ones() {
+        // Given — edit 1 changes "A" to "B", edit 2 changes "B" to "C"
+        // Since edit 1 applies first, the "B" it creates is found by edit 2
+        let content = "A";
+        let edits = vec![
+            Edit {
+                search: "A".to_string(),
+                replace: "B".to_string(),
+            },
+            Edit {
+                search: "B".to_string(),
+                replace: "C".to_string(),
+            },
+        ];
+
+        // When
+        let (result, results) = apply_edits(content, &edits);
+
+        // Then
+        assert_eq!(result, "C");
+        assert_eq!(results, vec![EditResult::Applied, EditResult::Applied]);
+    }
+
+    #[test]
+    fn apply_edits__should_report_all_failed_when_none_match() {
+        // Given
+        let content = "Hello world!";
+        let edits = vec![
+            Edit {
+                search: "foo".to_string(),
+                replace: "bar".to_string(),
+            },
+            Edit {
+                search: "baz".to_string(),
+                replace: "qux".to_string(),
+            },
+        ];
+
+        // When
+        let (result, results) = apply_edits(content, &edits);
+
+        // Then
+        assert_eq!(result, "Hello world!");
+        assert_eq!(results, vec![EditResult::Failed, EditResult::Failed]);
     }
 }
