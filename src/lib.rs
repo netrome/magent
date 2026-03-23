@@ -1,3 +1,4 @@
+pub mod edit;
 pub mod llm;
 pub mod parser;
 pub mod watcher;
