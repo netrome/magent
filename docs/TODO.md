@@ -19,7 +19,7 @@
 - [x] PR 1: Migrate response markers to custom elements (`<magent-response>`)
 - [x] PR 2: Edit block parser (`edit.rs`)
 - [x] PR 3: Edit application logic
-- [ ] PR 4: Wire edit proposals into the processing loop
+- [x] PR 4: Wire edit proposals into the processing loop
 - [ ] PR 5: Edit acceptance processing
 
 ## Up next

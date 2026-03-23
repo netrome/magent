@@ -29,6 +29,29 @@ pub fn parse_edits(response: &str) -> (Vec<Edit>, String) {
     (edits, remaining)
 }
 
+/// Format edits as a response body with `status="proposed"` blocks.
+///
+/// Combines the summary text (if any) with serialized edit blocks.
+/// The output is intended to be written inside a `<magent-response>` block.
+pub fn format_proposed_edits(edits: &[Edit], summary: &str) -> String {
+    let mut result = String::new();
+    if !summary.is_empty() {
+        result.push_str(summary);
+        result.push('\n');
+    }
+    for edit in edits {
+        result.push_str("<magent-edit status=\"proposed\">\n");
+        result.push_str("<magent-search>");
+        result.push_str(&edit.search);
+        result.push_str("</magent-search>\n");
+        result.push_str("<magent-replace>");
+        result.push_str(&edit.replace);
+        result.push_str("</magent-replace>\n");
+        result.push_str("</magent-edit>\n");
+    }
+    result
+}
+
 /// Result of applying a single edit.
 #[derive(Debug, PartialEq)]
 pub enum EditResult {
@@ -431,6 +454,96 @@ new line 2</magent-replace>
         // Then
         assert!(edits.is_empty());
         assert_eq!(remaining, response);
+    }
+
+    // --- format_proposed_edits ---
+
+    #[test]
+    fn format_proposed_edits__should_format_single_edit_with_summary() {
+        // Given
+        let edits = vec![Edit {
+            search: "old text".to_string(),
+            replace: "new text".to_string(),
+        }];
+
+        // When
+        let result = format_proposed_edits(&edits, "Fixed one thing:");
+
+        // Then
+        assert_eq!(
+            result,
+            "Fixed one thing:\n\
+             <magent-edit status=\"proposed\">\n\
+             <magent-search>old text</magent-search>\n\
+             <magent-replace>new text</magent-replace>\n\
+             </magent-edit>\n"
+        );
+    }
+
+    #[test]
+    fn format_proposed_edits__should_format_multiple_edits() {
+        // Given
+        let edits = vec![
+            Edit {
+                search: "first".to_string(),
+                replace: "1st".to_string(),
+            },
+            Edit {
+                search: "second".to_string(),
+                replace: "2nd".to_string(),
+            },
+        ];
+
+        // When
+        let result = format_proposed_edits(&edits, "");
+
+        // Then
+        assert!(result.contains("status=\"proposed\""));
+        // Both edits present
+        assert!(result.contains("<magent-search>first</magent-search>"));
+        assert!(result.contains("<magent-search>second</magent-search>"));
+    }
+
+    #[test]
+    fn format_proposed_edits__should_omit_summary_line_when_empty() {
+        // Given
+        let edits = vec![Edit {
+            search: "old".to_string(),
+            replace: "new".to_string(),
+        }];
+
+        // When
+        let result = format_proposed_edits(&edits, "");
+
+        // Then — should start directly with the edit block
+        assert!(result.starts_with("<magent-edit"));
+    }
+
+    #[test]
+    fn format_proposed_edits__should_roundtrip_with_parse_edit_blocks() {
+        // Given
+        let edits = vec![
+            Edit {
+                search: "old text".to_string(),
+                replace: "new text".to_string(),
+            },
+            Edit {
+                search: "line 1\nline 2".to_string(),
+                replace: "replaced".to_string(),
+            },
+        ];
+
+        // When
+        let formatted = format_proposed_edits(&edits, "Summary:");
+        let parsed = parse_edit_blocks(&formatted);
+
+        // Then
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].status, EditStatus::Proposed);
+        assert_eq!(parsed[0].search, "old text");
+        assert_eq!(parsed[0].replace, "new text");
+        assert_eq!(parsed[1].search, "line 1\nline 2");
+        assert_eq!(parsed[1].replace, "replaced");
     }
 
     // --- parse_edit_blocks ---

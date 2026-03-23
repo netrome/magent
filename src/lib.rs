@@ -98,14 +98,29 @@ async fn process_file(path: &Path, client: &impl LlmClient) {
     for directive in directives.iter().filter(|d| !d.processed) {
         println!("Processing: @magent {}", directive.prompt);
 
-        let response = match client.complete(&directive.prompt, Some(&content)).await {
+        let llm_response = match client.complete(&directive.prompt, Some(&content)).await {
             Ok(r) => r,
             Err(e) => format!("**Error:** {e}"),
         };
 
+        let response = format_response(&llm_response);
+
         if let Err(e) = writer::write_response(path, &directive.prompt, &response) {
             eprintln!("Failed to write response: {e}");
         }
+    }
+}
+
+/// Format an LLM response for writing into the document.
+///
+/// If the response contains edit blocks, formats them as `status="proposed"`.
+/// Otherwise returns the response as-is (plain text).
+fn format_response(llm_response: &str) -> String {
+    let (edits, summary) = edit::parse_edits(llm_response);
+    if edits.is_empty() {
+        llm_response.to_string()
+    } else {
+        edit::format_proposed_edits(&edits, &summary)
     }
 }
 
@@ -327,5 +342,92 @@ mod tests {
             document.contains("The sky is blue."),
             "document context should contain the file body"
         );
+    }
+
+    #[tokio::test]
+    async fn process_file__should_write_proposed_edits_when_llm_returns_edit_blocks() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(
+            &path,
+            "# Links\n\n- [Rust](htps://rust-lang.org)\n\n@magent fix the broken URL\n",
+        )
+        .unwrap();
+
+        let llm_response = "\
+Fixed the URL:
+<magent-edit>
+<magent-search>htps://rust-lang.org</magent-search>
+<magent-replace>https://rust-lang.org</magent-replace>
+</magent-edit>";
+        let client = FakeLlm(llm_response.to_string());
+
+        // When
+        process_file(&path, &client).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("status=\"proposed\""),
+            "should contain proposed status"
+        );
+        assert!(content.contains("<magent-search>htps://rust-lang.org</magent-search>"));
+        assert!(content.contains("<magent-replace>https://rust-lang.org</magent-replace>"));
+        // Document content should NOT be modified
+        assert!(
+            content.contains("- [Rust](htps://rust-lang.org)"),
+            "original document should be unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_file__should_not_contain_edit_blocks_for_plain_text_response() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent what is Rust?\n").unwrap();
+        let client = FakeLlm("Rust is a systems programming language.".to_string());
+
+        // When
+        process_file(&path, &client).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("Rust is a systems programming language."));
+        assert!(
+            !content.contains("magent-edit"),
+            "should not contain edit blocks"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_file__should_write_proposed_edits_parseable_by_edit_block_parser() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "old text here\n\n@magent fix this\n").unwrap();
+
+        let llm_response = "\
+<magent-edit>
+<magent-search>old text</magent-search>
+<magent-replace>new text</magent-replace>
+</magent-edit>";
+        let client = FakeLlm(llm_response.to_string());
+
+        // When
+        process_file(&path, &client).await;
+
+        // Then — the written response should be parseable by parse_edit_blocks
+        let content = std::fs::read_to_string(&path).unwrap();
+        let resp_start = content.find("<magent-response>\n").unwrap() + "<magent-response>\n".len();
+        let resp_end = content.find("\n</magent-response>").unwrap();
+        let response_content = &content[resp_start..resp_end];
+
+        let blocks = edit::parse_edit_blocks(response_content);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].status, edit::EditStatus::Proposed);
+        assert_eq!(blocks[0].search, "old text");
+        assert_eq!(blocks[0].replace, "new text");
     }
 }
