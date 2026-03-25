@@ -22,6 +22,10 @@
 - [x] PR 4: Wire edit proposals into the processing loop
 - [x] PR 5: Edit acceptance processing
 
+### Edit robustness
+- [x] Trim leading/trailing whitespace in search/replace tag extraction
+- [x] Add system prompt example showing multiline edit blocks with whitespace
+
 ## Up next
 
 ## Post-MVP

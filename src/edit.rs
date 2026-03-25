@@ -270,7 +270,7 @@ fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
     let start = open_pos + open.len();
     let end = text[start..].find(&close)? + start;
 
-    Some(text[start..end].to_string())
+    Some(text[start..end].trim().to_string())
 }
 
 /// Extract the `status` attribute value from an opening tag string.
@@ -524,6 +524,32 @@ new line 2</magent-replace>
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].search, "line 1\nline 2\nline 3");
         assert_eq!(edits[0].replace, "new line 1\nnew line 2");
+    }
+
+    #[test]
+    fn parse_edits__should_trim_whitespace_around_search_and_replace() {
+        // Given — LLMs naturally put content on its own lines inside tags
+        let response = "\
+<magent-edit>
+<magent-search>
+- Cucumber
+- Banana
+- Lemon
+</magent-search>
+<magent-replace>
+- Banana
+- Cucumber
+- Lemon
+</magent-replace>
+</magent-edit>";
+
+        // When
+        let (edits, _remaining) = parse_edits(response);
+
+        // Then — leading/trailing whitespace is trimmed
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].search, "- Cucumber\n- Banana\n- Lemon");
+        assert_eq!(edits[0].replace, "- Banana\n- Cucumber\n- Lemon");
     }
 
     #[test]
@@ -1176,6 +1202,46 @@ text below the response
         assert!(result.contains("status=\"applied\""));
         // The <magent-search> tag should still contain the original search text
         assert!(result.contains("<magent-search>text below the response</magent-search>"));
+    }
+
+    #[test]
+    fn process_accepted_edits__should_apply_multiline_edit_with_tag_whitespace() {
+        // Given — search/replace tags have leading/trailing newlines (common LLM output)
+        let content = "\
+- Cucumber
+- Banana
+- Lemon
+- Apple
+- Orange
+
+@magent sort the list
+
+<magent-response>
+<magent-edit status=\"accepted\">
+<magent-search>
+- Cucumber
+- Banana
+- Lemon
+- Apple
+- Orange
+</magent-search>
+<magent-replace>
+- Apple
+- Banana
+- Cucumber
+- Lemon
+- Orange
+</magent-replace>
+</magent-edit>
+</magent-response>
+";
+
+        // When
+        let result = process_accepted_edits(content).unwrap();
+
+        // Then — document is sorted, status is applied
+        assert!(result.starts_with("- Apple\n- Banana\n- Cucumber\n- Lemon\n- Orange\n"));
+        assert!(result.contains("status=\"applied\""));
     }
 
     #[test]

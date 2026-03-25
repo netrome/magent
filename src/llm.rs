@@ -18,6 +18,21 @@ When making changes to the document, output your edits using this format:
 <magent-replace>replacement text</magent-replace>
 </magent-edit>
 
+For multiline edits, put the content on its own lines:
+
+<magent-edit>
+<magent-search>
+- first item
+- second item
+</magent-search>
+<magent-replace>
+- second item
+- first item
+</magent-replace>
+</magent-edit>
+
+Leading and trailing whitespace inside search/replace tags is ignored.
+
 You may include multiple edit blocks. The search text must match the document \
 exactly (character for character). Include enough surrounding context in the \
 search text to uniquely identify the location.
