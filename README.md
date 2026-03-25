@@ -18,6 +18,9 @@ A directive is an `@magent` mention anywhere in a markdown file. When magent see
 @magent why is the sky blue?
 
 <magent-response>
+<magent-thinking>
+The user is asking about sky color. This is explained by Rayleigh scattering.
+</magent-thinking>
 Rayleigh scattering — shorter (blue) wavelengths of sunlight are
 scattered more by the atmosphere than longer wavelengths.
 </magent-response>
@@ -36,6 +39,9 @@ When a directive asks for changes, magent proposes edits using search-and-replac
 @magent fix the broken URLs above
 
 <magent-response>
+<magent-thinking>
+Both URLs use "htps" instead of "https". I need to fix each one.
+</magent-thinking>
 Fixed 2 broken URLs (htps → https):
 <magent-edit status="proposed">
 <magent-search>- [Rust](htps://rust-lang.org)</magent-search>
@@ -155,6 +161,9 @@ Magent picks it up and writes the response inline:
 @magent what is the capital of France?
 
 <magent-response>
+<magent-thinking>
+The user is asking about the capital of France.
+</magent-thinking>
 Paris.
 </magent-response>
 ```

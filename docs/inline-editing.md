@@ -155,6 +155,9 @@ This change affects the ADR (001-mvp-architecture) and requires an update to doc
 @magent fix the broken URLs above
 
 <magent-response>
+<magent-thinking>
+Both URLs use "htps" instead of "https". I need to fix each one.
+</magent-thinking>
 Fixed 2 broken URLs (htps → https):
 <magent-edit status="proposed">
 <magent-search>- [Rust](htps://rust-lang.org)</magent-search>
@@ -186,6 +189,9 @@ Magent detects the file change, finds accepted edits, applies them to the docume
 @magent fix the broken URLs above
 
 <magent-response>
+<magent-thinking>
+Both URLs use "htps" instead of "https". I need to fix each one.
+</magent-thinking>
 Fixed 2 broken URLs (htps → https):
 <magent-edit status="applied">
 <magent-search>- [Rust](htps://rust-lang.org)</magent-search>
@@ -220,6 +226,14 @@ The model decides. The system prompt always includes search/replace format instr
 Update the system prompt to instruct the model on the edit format:
 
 ```
+Before responding, think through your approach inside <magent-thinking> tags:
+
+<magent-thinking>
+Your reasoning here — what the user is asking, what needs to change, etc.
+</magent-thinking>
+
+Then provide your response or edit blocks after the thinking.
+
 When making changes to the document, output your edits using this format:
 
 <magent-edit>

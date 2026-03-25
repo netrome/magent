@@ -26,6 +26,9 @@
 - [x] Trim leading/trailing whitespace in search/replace tag extraction
 - [x] Add system prompt example showing multiline edit blocks with whitespace
 
+### Chain-of-thought prompting
+- [x] Add `<magent-thinking>` tags instruction to system prompt
+
 ## Up next
 
 ## Post-MVP

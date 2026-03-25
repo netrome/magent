@@ -11,6 +11,14 @@ const SYSTEM_PROMPT_TEMPLATE: &str = "\
 You are an AI assistant embedded in a markdown document. The user will ask \
 questions or request changes to the document below.
 
+Before responding, think through your approach inside <magent-thinking> tags:
+
+<magent-thinking>
+Your reasoning here — what the user is asking, what needs to change, etc.
+</magent-thinking>
+
+Then provide your response or edit blocks after the thinking.
+
 When making changes to the document, output your edits using this format:
 
 <magent-edit>
@@ -504,6 +512,18 @@ mod tests {
         assert!(result.contains("# Hello\n\nWorld."));
         assert!(result.contains("=== DOCUMENT ==="));
         assert!(result.contains("=== END DOCUMENT ==="));
+    }
+
+    #[test]
+    fn build_system_prompt__should_include_thinking_instruction() {
+        // When
+        let result = build_system_prompt("doc");
+
+        // Then
+        assert!(
+            result.contains("<magent-thinking>"),
+            "system prompt should instruct the model to use thinking tags"
+        );
     }
 
     /// Integration test that talks to a real LLM API.
