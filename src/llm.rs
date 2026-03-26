@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 /// The `{document}` placeholder is replaced with the actual document content.
 const SYSTEM_PROMPT_TEMPLATE: &str = "\
 You are an AI assistant embedded in a markdown document. The user will ask \
-questions or request changes to the document below.
+questions or request changes to the document below. Additional referenced \
+files may follow the main document — use them as context but only propose \
+edits to the main document.
 
 Before responding, think through your approach inside <magent-thinking> tags:
 

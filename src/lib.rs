@@ -1,3 +1,4 @@
+pub mod context;
 pub mod edit;
 pub mod llm;
 pub mod parser;
@@ -57,14 +58,14 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             println!("Watching {}...", directory.display());
 
-            process_events(rx, &client).await;
+            process_events(rx, &client, &directory).await;
 
             Ok(())
         }
     }
 }
 
-async fn process_events(mut rx: mpsc::Receiver<PathBuf>, client: &impl LlmClient) {
+async fn process_events(mut rx: mpsc::Receiver<PathBuf>, client: &impl LlmClient, root: &Path) {
     loop {
         let path = tokio::select! {
             Some(path) = rx.recv() => path,
@@ -75,7 +76,7 @@ async fn process_events(mut rx: mpsc::Receiver<PathBuf>, client: &impl LlmClient
         };
 
         tokio::select! {
-            _ = process_file(&path, client) => {}
+            _ = process_file(&path, client, root) => {}
             _ = tokio::signal::ctrl_c() => {
                 println!("\nShutting down.");
                 break;
@@ -84,7 +85,7 @@ async fn process_events(mut rx: mpsc::Receiver<PathBuf>, client: &impl LlmClient
     }
 }
 
-async fn process_file(path: &Path, client: &impl LlmClient) {
+async fn process_file(path: &Path, client: &impl LlmClient, root: &Path) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -108,7 +109,25 @@ async fn process_file(path: &Path, client: &impl LlmClient) {
     for directive in directives.iter().filter(|d| !d.processed) {
         println!("Processing: @magent {}", directive.prompt);
 
-        let llm_response = match client.complete(&directive.prompt, Some(&content)).await {
+        // Resolve context file references
+        let context_files = match context::resolve_context_files(&directive.options, root, path) {
+            Ok(files) => files,
+            Err(e) => {
+                let error_msg = format!("**Error:** {e}");
+                if let Err(e) = writer::write_response(path, &directive.prompt, &error_msg) {
+                    eprintln!("Failed to write response: {e}");
+                }
+                continue;
+            }
+        };
+
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let document = context::build_context_string(&content, &filename, &context_files);
+
+        let llm_response = match client.complete(&directive.prompt, Some(&document)).await {
             Ok(r) => r,
             Err(e) => format!("**Error:** {e}"),
         };
@@ -260,7 +279,7 @@ mod tests {
         let client = FakeLlm("Rayleigh scattering.".to_string());
 
         // When
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -278,7 +297,7 @@ mod tests {
         let client = FailingLlm("Connection refused (http://localhost:11434/v1)".to_string());
 
         // When
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -304,7 +323,7 @@ mod tests {
         };
 
         // When
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
 
         // Then
         assert_eq!(client.call_count.load(Ordering::Relaxed), 0);
@@ -319,7 +338,7 @@ mod tests {
         let client = FakeLlm("Answer.".to_string());
 
         // When
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -339,7 +358,7 @@ mod tests {
         let client = DocumentCaptureLlm::new();
 
         // When
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
 
         // Then
         let captured = client.captured_document.lock().unwrap();
@@ -374,7 +393,7 @@ Fixed the URL:
         let client = FakeLlm(llm_response.to_string());
 
         // When
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -400,7 +419,7 @@ Fixed the URL:
         let client = FakeLlm("Rust is a systems programming language.".to_string());
 
         // When
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -426,7 +445,7 @@ Fixed the URL:
         let client = FakeLlm(llm_response.to_string());
 
         // When
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
 
         // Then — the written response should be parseable by parse_edit_blocks
         let content = std::fs::read_to_string(&path).unwrap();
@@ -471,7 +490,7 @@ Fixed:
         };
 
         // When
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
 
         // Then — edit applied, LLM not called
         let content = std::fs::read_to_string(&path).unwrap();
@@ -514,7 +533,7 @@ Fixed the URL:
         let client = FakeLlm(llm_response.to_string());
 
         // Step 1: Process directive — should propose edits
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("status=\"proposed\""));
         assert!(
@@ -527,7 +546,7 @@ Fixed the URL:
         std::fs::write(&path, &accepted).unwrap();
 
         // Step 3: Process acceptance — should apply edits
-        process_file(&path, &client).await;
+        process_file(&path, &client, dir.path()).await;
         let final_content = std::fs::read_to_string(&path).unwrap();
         assert!(
             final_content.contains("- [Rust](https://rust-lang.org)"),
@@ -541,5 +560,97 @@ Fixed the URL:
             !final_content.contains("status=\"accepted\""),
             "no accepted statuses should remain"
         );
+    }
+
+    #[tokio::test]
+    async fn process_file__should_pass_referenced_files_to_llm() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("rust.md"), "# Rust\nOwnership rules.\n").unwrap();
+        let path = dir.path().join("main.md");
+        std::fs::write(&path, "@magent(context: rust.md) compare error handling\n").unwrap();
+        let client = DocumentCaptureLlm::new();
+
+        // When
+        process_file(&path, &client, dir.path()).await;
+
+        // Then
+        let captured = client.captured_document.lock().unwrap();
+        let document = captured.as_ref().expect("document should be passed to LLM");
+        assert!(
+            document.contains("=== CURRENT DOCUMENT: main.md ==="),
+            "should label the current document"
+        );
+        assert!(
+            document.contains("=== REFERENCED: rust.md ==="),
+            "should label the referenced file"
+        );
+        assert!(
+            document.contains("Ownership rules."),
+            "should include referenced file content"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_file__should_not_add_headers_when_no_context_option() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "# Doc\n\n@magent summarize\n").unwrap();
+        let client = DocumentCaptureLlm::new();
+
+        // When
+        process_file(&path, &client, dir.path()).await;
+
+        // Then — document should be plain content, no headers
+        let captured = client.captured_document.lock().unwrap();
+        let document = captured.as_ref().unwrap();
+        assert!(
+            !document.contains("=== CURRENT DOCUMENT"),
+            "should not add headers when no context references"
+        );
+        assert!(document.contains("# Doc"));
+    }
+
+    #[tokio::test]
+    async fn process_file__should_write_error_for_missing_context_file() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent(context: nonexistent.md) summarize\n").unwrap();
+        let client = FakeLlm("Should not be called.".to_string());
+
+        // When
+        process_file(&path, &client, dir.path()).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("<magent-response>"));
+        assert!(content.contains("**Error:**"));
+        assert!(content.contains("nonexistent.md"));
+    }
+
+    #[tokio::test]
+    async fn process_file__should_write_error_for_path_traversal() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        // Create a file outside root so the path resolves but is rejected
+        let outside = dir.path().join("../outside.md");
+        std::fs::write(&outside, "secret").unwrap();
+        std::fs::write(&path, "@magent(context: ../outside.md) summarize\n").unwrap();
+        let client = FakeLlm("Should not be called.".to_string());
+
+        // When
+        process_file(&path, &client, dir.path()).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("<magent-response>"));
+        assert!(content.contains("**Error:**"));
+        assert!(content.contains("outside the knowledge base"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&outside);
     }
 }

@@ -31,7 +31,7 @@
 
 ### Explicit references
 - [x] PR 1: Parse directive options into `HashMap<String, String>`
-- [ ] PR 2: Resolve context files, assemble extended document, update system prompt
+- [x] PR 2: Resolve context files, assemble extended document, update system prompt
 
 ## Up next
 
