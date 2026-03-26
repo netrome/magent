@@ -34,7 +34,7 @@
 ## Current
 
 ### Tool use + knowledge base search
-- [ ] PR 1: Tool call parser (`tool.rs`)
+- [x] PR 1: Tool call parser (`tool.rs`)
 - [x] PR 2: Search tool (`tools/search.rs`)
 - [ ] PR 3: Read tool (`tools/read.rs`)
 - [ ] PR 4: Multi-turn LLM support (unified `complete_messages` interface)
