@@ -31,14 +31,14 @@
 - [x] PR 1: Parse directive options into `HashMap<String, String>`
 - [x] PR 2: Resolve context files, assemble extended document, update system prompt
 
-## Current
-
 ### Tool use + knowledge base search
 - [x] PR 1: Tool call parser (`tool.rs`)
 - [x] PR 2: Search tool (`tools/search.rs`)
 - [x] PR 3: Read tool (`tools/read.rs`)
 - [x] PR 4: Multi-turn LLM support (unified `complete_messages` interface)
-- [ ] PR 5: Wire tool use into processing loop
+- [x] PR 5: Wire tool use into processing loop
+
+## Current
 
 ## Post-MVP
 

@@ -57,7 +57,35 @@ Respond in the same language as the document unless asked otherwise.
 
 === DOCUMENT ===
 {document}
-=== END DOCUMENT ===";
+=== END DOCUMENT ===
+
+=== TOOLS ===
+
+You have access to tools for gathering information. To use a tool, output:
+
+<magent-tool-call tool=\"tool_name\">
+<magent-input>your input here</magent-input>
+</magent-tool-call>
+
+After a tool call, stop and wait. The system will provide the result in a \
+<magent-tool-result> block, then you continue your response.
+
+You may call multiple tools in sequence. Do not guess tool results — always \
+call the tool and use the actual result.
+
+Available tools:
+
+## search
+Search for text across markdown files in the knowledge base.
+Input: a search query (plain text or regex). Optional prefixes: path:subdir/, max:N
+Returns: matching lines with file paths and line numbers.
+
+## read
+Read the full content of a file in the knowledge base.
+Input: a relative file path, optionally followed by a line range (e.g. notes/rust.md 40-60)
+Returns: the file content with line numbers.
+
+=== END TOOLS ===";
 
 /// A chat message with role and content.
 #[derive(Debug, Clone)]
