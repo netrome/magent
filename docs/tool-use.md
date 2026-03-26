@@ -185,25 +185,33 @@ Pros: no external dependencies (regex is already a transitive dep), fully self-c
 
 ## The read tool
 
-A companion to search: once the agent finds relevant files via search, it may want the full content.
+A companion to search: once the agent finds relevant files via search, it may want to see more context.
 
 ```
 Tool: read
-Description: Read the full content of a file in the knowledge base.
+Description: Read content from a file in the knowledge base.
 
-Input: A relative file path.
+Input: A relative file path, optionally followed by a line range.
 
-Example:
+Examples:
   <magent-tool-call tool="read">
   <magent-input>notes/rust.md</magent-input>
   </magent-tool-call>
+
+  <magent-tool-call tool="read">
+  <magent-input>notes/rust.md 40-60</magent-input>
+  </magent-tool-call>
 ```
 
-Returns the file content, or an error if the file doesn't exist or is outside the knowledge base root.
+Without a line range, returns the full file content. With a range (e.g. `40-60`), returns only those lines (1-indexed, inclusive). The typical workflow is search → find interesting lines → read a range around them.
+
+Returns the file content (with line numbers), or an error if the file doesn't exist or is outside the knowledge base root.
 
 The same path validation rules from explicit references apply: no traversal outside the watched root.
 
 This tool is what enables "agent decides to expand a link" — the agent sees a `[linked file](path.md)` in the document, and if it judges the content would be helpful, it calls `read` to pull it in.
+
+**Note on large results:** for the initial implementation, tool results are embedded inline in the response block. This is fine for line-range reads and bounded search results. A future caching mechanism (see `docs/tool-result-caching.md`) will store large results in `.magent/tool-cache/` and reference them from the response block instead.
 
 ## What the response looks like
 
