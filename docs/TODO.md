@@ -13,8 +13,6 @@
 ### Post-MVP
 - [x] Document context in LLM prompts
 
-## Current
-
 ### Inline document editing
 - [x] PR 1: Migrate response markers to custom elements (`<magent-response>`)
 - [x] PR 2: Edit block parser (`edit.rs`)
@@ -33,7 +31,14 @@
 - [x] PR 1: Parse directive options into `HashMap<String, String>`
 - [x] PR 2: Resolve context files, assemble extended document, update system prompt
 
-## Up next
+## Current
+
+### Tool use + knowledge base search
+- [ ] PR 1: Tool call parser (`tool.rs`)
+- [ ] PR 2: Search tool (`tools/search.rs`)
+- [ ] PR 3: Read tool (`tools/read.rs`)
+- [ ] PR 4: Multi-turn LLM support (unified `complete_messages` interface)
+- [ ] PR 5: Wire tool use into processing loop
 
 ## Post-MVP
 

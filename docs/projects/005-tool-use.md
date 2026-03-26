@@ -1,6 +1,6 @@
 # Tool Use + Knowledge Base Search
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Goal
 
@@ -92,6 +92,10 @@ All of this happens within a single `process_file` invocation. The user sees the
 
 The response block serves as the conversation log. No separate state file needed.
 
+### One tool call per turn
+
+The stop sequence design means the LLM emits at most one tool call per turn — generation halts at `</magent-tool-call>`, magent executes the tool, sends the result back, and the LLM continues. This is intentional for MVP: simpler loop, predictable behavior, and no ambiguity about execution order. Parallel/batch tool calls can be added later without changing the tag format.
+
 ### Stop sequences
 
 To prevent the model from hallucinating tool results, use `</magent-tool-call>` as a stop sequence in the API request. When the model outputs a tool call, generation stops immediately. Magent executes the tool and sends the real result back.
@@ -131,6 +135,12 @@ Input: A search query (plain text or regex pattern).
        - path:subdir/ — limit search to a subdirectory
        - glob:*.md — file pattern filter (default: *.md)
        - max:N — maximum results (default: 20)
+
+Parsing: greedy prefix parse. Consume recognized `key:value` tokens
+(path:, glob:, max:) from the front of the input, left to right. Stop
+at the first token that doesn't match a known key. Everything remaining
+is the query. This means a query that literally starts with "path:" would
+need a leading space or dummy prefix, but that's an acceptable edge case.
 
 Examples:
   <magent-tool-call tool="search">
@@ -385,21 +395,40 @@ Validates path is within root, reads and returns content.
 ### LLM client (`llm.rs`)
 
 - Add `stop` parameter support to `ChatRequest` (for `</magent-tool-call>` stop sequence)
-- Add a method or extend `complete` to support multi-turn conversations (message list instead of single prompt)
+- Replace `complete` with a unified `complete_messages` interface. The existing single-turn usage builds a one-turn message list at the call site. One interface, no duplication.
 
-The `LlmClient` trait evolves:
+The `LlmClient` trait becomes:
 
 ```rust
 pub trait LlmClient {
-    // Existing simple interface (still used for non-tool directives)
-    fn complete(&self, prompt: &str, document: Option<&str>)
-        -> impl Future<Output = Result<String, LlmError>> + Send;
-
-    // Multi-turn interface for tool use
     fn complete_messages(&self, messages: &[Message], stop: &[&str])
         -> impl Future<Output = Result<String, LlmError>> + Send;
 }
 ```
+
+The old `complete(prompt, document)` call sites construct a `Vec<Message>` (system + user) and call `complete_messages` with an empty stop list. No convenience wrapper needed.
+
+### Tool dispatch
+
+Tools are dispatched via a simple match in the processing loop. No registry, no trait object indirection:
+
+```rust
+match call.tool.as_str() {
+    "search" => search_tool.execute(&call.input),
+    "read" => read_tool.execute(&call.input),
+    _ => format!("Unknown tool: {}", call.tool),
+}
+```
+
+### Error handling in tools
+
+Tool execution must not panic or propagate errors to the caller. Tools return their errors as the tool result string, so the LLM can see what went wrong and recover (e.g., retry with a corrected path, try a different query):
+
+- File not found → `"Error: file 'foo.md' not found"`
+- Invalid regex → `"Error: invalid regex pattern: ..."`
+- Path outside root → `"Error: path is outside the knowledge base"`
+
+The `execute()` method returns `String`, not `Result`. Errors are part of the conversation, not control flow.
 
 ### Processing loop (`lib.rs`)
 
@@ -409,24 +438,24 @@ pub trait LlmClient {
 // Pseudocode
 let mut messages = build_initial_messages(directive, document, tools_prompt);
 let mut full_response = String::new();
+let mut tool_call_count = 0;
 
 loop {
     let response = client.complete_messages(&messages, &["</magent-tool-call>"]).await?;
     full_response.push_str(&response);
 
-    let tool_calls = parse_tool_calls(&response);
-    if tool_calls.is_empty() {
-        break;  // No more tool calls — done
-    }
+    let tool_call = parse_tool_call(&response);  // at most one per turn
+    let Some(call) = tool_call else {
+        break;  // No tool call — done
+    };
 
-    for call in tool_calls {
-        let result = execute_tool(&call, &tools)?;
-        full_response.push_str(&format_tool_result(&result));
-        messages.push(assistant_message(&response));
-        messages.push(user_message(&format_tool_result(&result)));
-    }
+    tool_call_count += 1;
+    let result = execute_tool(&call);  // returns String, never fails
+    full_response.push_str(&format_tool_result(&call.tool, &result));
+    messages.push(assistant_message(&response));
+    messages.push(user_message(&format_tool_result(&call.tool, &result)));
 
-    if tool_call_count > MAX_TOOL_CALLS {
+    if tool_call_count >= MAX_TOOL_CALLS {
         full_response.push_str("\n(Tool call limit reached.)");
         break;
     }
@@ -439,7 +468,7 @@ write_response(path, &directive.prompt, &full_response)?;
 
 - **Tool call limit**: hardcoded at 5 for now. Move to config file when that exists.
 - **Search result size**: hardcoded max 20 results. May need tuning based on model context windows.
-- **Parallel tool calls**: the model might want to call search + read in one turn. For MVP, we process tool calls sequentially. Parallel execution is a future optimization.
+- **Parallel tool calls**: the stop sequence design means one call per turn. A future optimization could allow the model to emit multiple calls in one turn (requires a different parsing strategy and removing the stop sequence).
 - **Context window management**: search results + file reads can blow up context. For now, this is the model's problem. Later, we may want to truncate or summarize tool results.
 - **ToC / section extraction**: `read` returns the full file. A future `toc` or `read_section` tool could return just a table of contents or a specific section, saving context space.
 
@@ -472,7 +501,8 @@ write_response(path, &directive.prompt, &full_response)?;
 - New `tools/` module directory with `search.rs`
 - `SearchTool` struct with `execute()` method
 - Walks `.md` files under root, searches with `regex`, formats results
-- Input parsing for optional `path:`, `max:` prefixes
+- Greedy prefix parse for optional `path:`, `glob:`, `max:` options
+- `execute()` returns `String` (errors are returned as result text, not `Result`)
 
 **Acceptance criteria:**
 - Finds matches across multiple files
@@ -480,6 +510,7 @@ write_response(path, &directive.prompt, &full_response)?;
 - Respects `path:` filter (subdirectory)
 - Respects `max:` limit with "(N more matches not shown)" note
 - Returns "No matches found" for empty results
+- Invalid regex returns error in result text (e.g. `"Error: invalid regex pattern: ..."`)
 - Paths outside root are not searched
 - Unit tests with temp directory fixtures
 
@@ -488,24 +519,27 @@ write_response(path, &directive.prompt, &full_response)?;
 **Changes:**
 - `ReadTool` struct with `execute()` method
 - Path validation (within root, file exists)
+- `execute()` returns `String` (errors are returned as result text, not `Result`)
 
 **Acceptance criteria:**
 - Returns file content for valid paths
-- Returns error message for missing files
-- Rejects paths outside the knowledge base root
+- Returns error message for missing files (e.g. `"Error: file 'foo.md' not found"`)
+- Rejects paths outside the knowledge base root (error in result text)
+- Supports optional line range (`file.md 40-60`)
 - Unit tests
 
 ### PR 4: Multi-turn LLM support
 
 **Changes:**
-- Add `complete_messages()` to `LlmClient` trait
+- Replace `complete()` with `complete_messages()` on `LlmClient` trait
 - Add `stop` sequence support to `ChatRequest`
 - Implement for `ChatClient`
+- Update all existing call sites to build message lists
 
 **Acceptance criteria:**
 - Multi-turn conversations work (multiple messages sent, response returned)
 - Stop sequences halt generation at the specified token
-- Existing `complete()` still works unchanged
+- All existing tests pass with the unified interface (no behavior change)
 - Tests with wiremock verifying request format
 
 ### PR 5: Wire tool use into processing loop
