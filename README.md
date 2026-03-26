@@ -85,6 +85,14 @@ This allows magent to:
 - Clearly delimit agent-written content from your own writing
 - Use a single `magent-*` tag vocabulary for responses, edits, and future features
 
+## Tools
+
+Magent can use tools to answer directives more effectively:
+- **Search** — find relevant files in the knowledge base by keyword
+- **Read** — read the contents of a specific file
+
+When a directive requires context beyond the current document, magent searches and reads files on its own, then incorporates what it finds into its response. No special syntax needed — the agent decides when to use tools based on the question.
+
 ## File structure
 
 Magent needs minimal infrastructure in your knowledge base:
