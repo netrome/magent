@@ -32,6 +32,12 @@ pub struct Directive { … }
 pub fn parse_directives(…) -> Vec<Directive> { … }
 ```
 
+### Module files
+
+Prefer `foo.rs` over `foo/mod.rs` for module declarations. A module `tools`
+with submodules is declared via `src/tools.rs` (containing `pub mod search;`
+etc.) alongside the `src/tools/` directory.
+
 ### Separation of concerns
 
 Domain logic lives in top-level modules (`parser.rs`, `llm.rs`,

@@ -3,6 +3,7 @@ pub mod edit;
 pub mod llm;
 pub mod parser;
 pub mod tool;
+pub mod tools;
 pub mod watcher;
 pub mod writer;
 
