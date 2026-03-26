@@ -2,6 +2,7 @@ pub mod context;
 pub mod edit;
 pub mod llm;
 pub mod parser;
+pub mod tool;
 pub mod watcher;
 pub mod writer;
 
