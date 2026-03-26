@@ -37,7 +37,7 @@
 - [x] PR 1: Tool call parser (`tool.rs`)
 - [x] PR 2: Search tool (`tools/search.rs`)
 - [x] PR 3: Read tool (`tools/read.rs`)
-- [ ] PR 4: Multi-turn LLM support (unified `complete_messages` interface)
+- [x] PR 4: Multi-turn LLM support (unified `complete_messages` interface)
 - [ ] PR 5: Wire tool use into processing loop
 
 ## Post-MVP

@@ -129,7 +129,11 @@ async fn process_file(path: &Path, client: &impl LlmClient, root: &Path) {
             .unwrap_or_default();
         let document = context::build_context_string(&content, &filename, &context_files);
 
-        let llm_response = match client.complete(&directive.prompt, Some(&document)).await {
+        let messages = vec![
+            llm::Message::system(llm::build_system_prompt(&document)),
+            llm::Message::user(&directive.prompt),
+        ];
+        let llm_response = match client.complete_messages(&messages, &[]).await {
             Ok(r) => r,
             Err(e) => format!("**Error:** {e}"),
         };
@@ -164,10 +168,10 @@ mod tests {
     struct FakeLlm(String);
 
     impl LlmClient for FakeLlm {
-        async fn complete(
+        async fn complete_messages(
             &self,
-            _prompt: &str,
-            _document: Option<&str>,
+            _messages: &[llm::Message],
+            _stop: &[&str],
         ) -> Result<String, llm::LlmError> {
             Ok(self.0.clone())
         }
@@ -176,10 +180,10 @@ mod tests {
     struct FailingLlm(String);
 
     impl LlmClient for FailingLlm {
-        async fn complete(
+        async fn complete_messages(
             &self,
-            _prompt: &str,
-            _document: Option<&str>,
+            _messages: &[llm::Message],
+            _stop: &[&str],
         ) -> Result<String, llm::LlmError> {
             Err(llm::LlmError::Connection(self.0.clone()))
         }
@@ -191,35 +195,35 @@ mod tests {
     }
 
     impl LlmClient for SpyLlm {
-        async fn complete(
+        async fn complete_messages(
             &self,
-            _prompt: &str,
-            _document: Option<&str>,
+            _messages: &[llm::Message],
+            _stop: &[&str],
         ) -> Result<String, llm::LlmError> {
             self.call_count.fetch_add(1, Ordering::Relaxed);
             Ok(self.response.clone())
         }
     }
 
-    struct DocumentCaptureLlm {
-        captured_document: std::sync::Mutex<Option<String>>,
+    struct MessageCaptureLlm {
+        captured_messages: std::sync::Mutex<Option<Vec<llm::Message>>>,
     }
 
-    impl DocumentCaptureLlm {
+    impl MessageCaptureLlm {
         fn new() -> Self {
             Self {
-                captured_document: std::sync::Mutex::new(None),
+                captured_messages: std::sync::Mutex::new(None),
             }
         }
     }
 
-    impl LlmClient for DocumentCaptureLlm {
-        async fn complete(
+    impl LlmClient for MessageCaptureLlm {
+        async fn complete_messages(
             &self,
-            _prompt: &str,
-            document: Option<&str>,
+            messages: &[llm::Message],
+            _stop: &[&str],
         ) -> Result<String, llm::LlmError> {
-            *self.captured_document.lock().unwrap() = document.map(String::from);
+            *self.captured_messages.lock().unwrap() = Some(messages.to_vec());
             Ok("Response.".to_string())
         }
     }
@@ -357,20 +361,21 @@ mod tests {
         let path = dir.path().join("test.md");
         let file_content = "# My Essay\n\nThe sky is blue.\n\n@magent summarize this document\n";
         std::fs::write(&path, file_content).unwrap();
-        let client = DocumentCaptureLlm::new();
+        let client = MessageCaptureLlm::new();
 
         // When
         process_file(&path, &client, dir.path()).await;
 
         // Then
-        let captured = client.captured_document.lock().unwrap();
-        let document = captured.as_ref().expect("document should be passed to LLM");
+        let captured = client.captured_messages.lock().unwrap();
+        let messages = captured.as_ref().expect("messages should be passed to LLM");
+        let system_content = &messages[0].content;
         assert!(
-            document.contains("# My Essay"),
+            system_content.contains("# My Essay"),
             "document context should contain the file heading"
         );
         assert!(
-            document.contains("The sky is blue."),
+            system_content.contains("The sky is blue."),
             "document context should contain the file body"
         );
     }
@@ -571,24 +576,25 @@ Fixed the URL:
         std::fs::write(dir.path().join("rust.md"), "# Rust\nOwnership rules.\n").unwrap();
         let path = dir.path().join("main.md");
         std::fs::write(&path, "@magent(context: rust.md) compare error handling\n").unwrap();
-        let client = DocumentCaptureLlm::new();
+        let client = MessageCaptureLlm::new();
 
         // When
         process_file(&path, &client, dir.path()).await;
 
         // Then
-        let captured = client.captured_document.lock().unwrap();
-        let document = captured.as_ref().expect("document should be passed to LLM");
+        let captured = client.captured_messages.lock().unwrap();
+        let messages = captured.as_ref().expect("messages should be passed to LLM");
+        let system_content = &messages[0].content;
         assert!(
-            document.contains("=== CURRENT DOCUMENT: main.md ==="),
+            system_content.contains("=== CURRENT DOCUMENT: main.md ==="),
             "should label the current document"
         );
         assert!(
-            document.contains("=== REFERENCED: rust.md ==="),
+            system_content.contains("=== REFERENCED: rust.md ==="),
             "should label the referenced file"
         );
         assert!(
-            document.contains("Ownership rules."),
+            system_content.contains("Ownership rules."),
             "should include referenced file content"
         );
     }
@@ -599,19 +605,20 @@ Fixed the URL:
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.md");
         std::fs::write(&path, "# Doc\n\n@magent summarize\n").unwrap();
-        let client = DocumentCaptureLlm::new();
+        let client = MessageCaptureLlm::new();
 
         // When
         process_file(&path, &client, dir.path()).await;
 
-        // Then — document should be plain content, no headers
-        let captured = client.captured_document.lock().unwrap();
-        let document = captured.as_ref().unwrap();
+        // Then — system message should be plain content, no headers
+        let captured = client.captured_messages.lock().unwrap();
+        let messages = captured.as_ref().unwrap();
+        let system_content = &messages[0].content;
         assert!(
-            !document.contains("=== CURRENT DOCUMENT"),
+            !system_content.contains("=== CURRENT DOCUMENT"),
             "should not add headers when no context references"
         );
-        assert!(document.contains("# Doc"));
+        assert!(system_content.contains("# Doc"));
     }
 
     #[tokio::test]

@@ -59,12 +59,42 @@ Respond in the same language as the document unless asked otherwise.
 {document}
 === END DOCUMENT ===";
 
+/// A chat message with role and content.
+#[derive(Debug, Clone)]
+pub struct Message {
+    pub role: String,
+    pub content: String,
+}
+
+impl Message {
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: "system".to_string(),
+            content: content.into(),
+        }
+    }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: content.into(),
+        }
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+        }
+    }
+}
+
 /// Trait for LLM completion.
 pub trait LlmClient {
-    fn complete(
+    fn complete_messages(
         &self,
-        prompt: &str,
-        document: Option<&str>,
+        messages: &[Message],
+        stop: &[&str],
     ) -> impl Future<Output = Result<String, LlmError>> + Send;
 }
 
@@ -111,25 +141,25 @@ impl ChatClient {
 }
 
 impl LlmClient for ChatClient {
-    async fn complete(&self, prompt: &str, document: Option<&str>) -> Result<String, LlmError> {
+    async fn complete_messages(
+        &self,
+        messages: &[Message],
+        stop: &[&str],
+    ) -> Result<String, LlmError> {
         let url = format!("{}/chat/completions", self.api_url.trim_end_matches('/'));
 
-        let system_prompt = document.map(build_system_prompt);
-        let mut messages = Vec::new();
-        if let Some(ref system) = system_prompt {
-            messages.push(Message {
-                role: "system",
-                content: system,
-            });
-        }
-        messages.push(Message {
-            role: "user",
-            content: prompt,
-        });
+        let api_messages: Vec<ApiMessage> = messages
+            .iter()
+            .map(|m| ApiMessage {
+                role: &m.role,
+                content: &m.content,
+            })
+            .collect();
 
         let body = ChatRequest {
             model: &self.model,
-            messages,
+            messages: api_messages,
+            stop: stop.to_vec(),
         };
 
         let mut req = self.http.post(&url).json(&body);
@@ -165,7 +195,7 @@ impl LlmClient for ChatClient {
     }
 }
 
-fn build_system_prompt(document: &str) -> String {
+pub fn build_system_prompt(document: &str) -> String {
     SYSTEM_PROMPT_TEMPLATE.replace("{document}", document)
 }
 
@@ -174,11 +204,13 @@ fn build_system_prompt(document: &str) -> String {
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: Vec<Message<'a>>,
+    messages: Vec<ApiMessage<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    stop: Vec<&'a str>,
 }
 
 #[derive(Serialize)]
-struct Message<'a> {
+struct ApiMessage<'a> {
     role: &'a str,
     content: &'a str,
 }
@@ -225,7 +257,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete__should_return_response_text() {
+    async fn complete_messages__should_return_response_text() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -235,16 +267,17 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri(), None);
+        let messages = vec![Message::user("Hello")];
 
         // When
-        let result = client.complete("Hello", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
         assert_eq!(result.unwrap(), "Hello back!");
     }
 
     #[tokio::test]
-    async fn complete__should_send_model_and_prompt_in_request() {
+    async fn complete_messages__should_send_model_and_messages_in_request() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -258,16 +291,17 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri(), None);
+        let messages = vec![Message::user("What is Rust?")];
 
         // When
-        let result = client.complete("What is Rust?", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
         assert_eq!(result.unwrap(), "A language.");
     }
 
     #[tokio::test]
-    async fn complete__should_send_bearer_token_when_api_key_is_set() {
+    async fn complete_messages__should_send_bearer_token_when_api_key_is_set() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -280,16 +314,17 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri(), Some("secret-key-123"));
+        let messages = vec![Message::user("Hello")];
 
         // When
-        let result = client.complete("Hello", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
         assert_eq!(result.unwrap(), "Authenticated!");
     }
 
     #[tokio::test]
-    async fn complete__should_not_send_auth_header_when_no_api_key() {
+    async fn complete_messages__should_not_send_auth_header_when_no_api_key() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -302,9 +337,10 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri(), None);
+        let messages = vec![Message::user("Hello")];
 
         // When
-        let result = client.complete("Hello", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
         assert_eq!(result.unwrap(), "No auth needed.");
@@ -316,7 +352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete__should_return_api_error_on_4xx() {
+    async fn complete_messages__should_return_api_error_on_4xx() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -328,9 +364,10 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri(), None);
+        let messages = vec![Message::user("Hello")];
 
         // When
-        let result = client.complete("Hello", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
         let err = result.unwrap_err();
@@ -339,7 +376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete__should_return_api_error_on_5xx() {
+    async fn complete_messages__should_return_api_error_on_5xx() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -349,9 +386,10 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri(), None);
+        let messages = vec![Message::user("Hello")];
 
         // When
-        let result = client.complete("Hello", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
         let err = result.unwrap_err();
@@ -359,12 +397,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete__should_return_connection_error_when_server_unreachable() {
+    async fn complete_messages__should_return_connection_error_when_server_unreachable() {
         // Given — point to a port where nothing is listening
         let client = test_client("http://127.0.0.1:1", None);
+        let messages = vec![Message::user("Hello")];
 
         // When
-        let result = client.complete("Hello", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
         let err = result.unwrap_err();
@@ -373,7 +412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete__should_return_parse_error_on_malformed_json() {
+    async fn complete_messages__should_return_parse_error_on_malformed_json() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -383,16 +422,17 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri(), None);
+        let messages = vec![Message::user("Hello")];
 
         // When
-        let result = client.complete("Hello", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
         assert!(matches!(result.unwrap_err(), LlmError::Parse(_)));
     }
 
     #[tokio::test]
-    async fn complete__should_return_parse_error_when_no_choices() {
+    async fn complete_messages__should_return_parse_error_when_no_choices() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -404,9 +444,10 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri(), None);
+        let messages = vec![Message::user("Hello")];
 
         // When
-        let result = client.complete("Hello", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
         let err = result.unwrap_err();
@@ -415,7 +456,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete__should_send_system_message_when_document_provided() {
+    async fn complete_messages__should_send_system_and_user_messages() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -431,48 +472,108 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri(), None);
+        let messages = vec![
+            Message::system(build_system_prompt("# My Document\n\nSome content.")),
+            Message::user("summarize this"),
+        ];
 
         // When
-        let result = client
-            .complete("summarize this", Some("# My Document\n\nSome content."))
-            .await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
         assert_eq!(result.unwrap(), "A summary.");
     }
 
     #[tokio::test]
-    async fn complete__should_not_send_system_message_when_no_document() {
+    async fn complete_messages__should_send_multi_turn_conversation() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .and(body_partial_json(serde_json::json!({
                 "messages": [
-                    { "role": "user", "content": "Hello" }
+                    { "role": "system", "content": "You are helpful." },
+                    { "role": "user", "content": "Hello" },
+                    { "role": "assistant", "content": "Hi there!" },
+                    { "role": "user", "content": "Search result here" }
                 ]
             })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(success_response("Hi!")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(success_response("Based on results...")),
+            )
             .mount(&server)
             .await;
 
         let client = test_client(&server.uri(), None);
+        let messages = vec![
+            Message::system("You are helpful."),
+            Message::user("Hello"),
+            Message::assistant("Hi there!"),
+            Message::user("Search result here"),
+        ];
 
         // When
-        let result = client.complete("Hello", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         // Then
-        assert_eq!(result.unwrap(), "Hi!");
-        // Verify only one message was sent (no system message)
-        let requests = server.received_requests().await.unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
-        let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 1, "should only have the user message");
-        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(result.unwrap(), "Based on results...");
     }
 
     #[tokio::test]
-    async fn complete__should_include_document_content_in_system_message() {
+    async fn complete_messages__should_send_stop_sequences() {
+        // Given
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_partial_json(serde_json::json!({
+                "stop": ["</magent-tool-call>"]
+            })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(success_response("I'll search...")),
+            )
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri(), None);
+        let messages = vec![Message::user("search for errors")];
+
+        // When
+        let result = client
+            .complete_messages(&messages, &["</magent-tool-call>"])
+            .await;
+
+        // Then
+        assert_eq!(result.unwrap(), "I'll search...");
+    }
+
+    #[tokio::test]
+    async fn complete_messages__should_omit_stop_when_empty() {
+        // Given
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response("Hi!")))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri(), None);
+        let messages = vec![Message::user("Hello")];
+
+        // When
+        client.complete_messages(&messages, &[]).await.unwrap();
+
+        // Then — verify "stop" key is not in the request body
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(
+            body.get("stop").is_none(),
+            "stop field should be omitted when empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_messages__should_include_document_in_system_message() {
         // Given
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -482,19 +583,20 @@ mod tests {
             .await;
 
         let client = test_client(&server.uri(), None);
+        let messages = vec![
+            Message::system(build_system_prompt("# Shopping List\n\n- milk\n- eggs\n")),
+            Message::user("edit this"),
+        ];
 
         // When
-        client
-            .complete("edit this", Some("# Shopping List\n\n- milk\n- eggs\n"))
-            .await
-            .unwrap();
+        client.complete_messages(&messages, &[]).await.unwrap();
 
         // Then — verify the system message contains the document
         let requests = server.received_requests().await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
-        let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 2);
-        let system_content = messages[0]["content"].as_str().unwrap();
+        let api_messages = body["messages"].as_array().unwrap();
+        assert_eq!(api_messages.len(), 2);
+        let system_content = api_messages[0]["content"].as_str().unwrap();
         assert!(
             system_content.contains("# Shopping List"),
             "system message should contain the document content"
@@ -533,7 +635,7 @@ mod tests {
     /// Ignored by default — run it explicitly with:
     ///
     /// ```sh
-    /// cargo nextest run complete__should_get_response_from_real_api --run-ignored only
+    /// cargo nextest run complete_messages__should_get_response_from_real_api --run-ignored only
     /// ```
     ///
     /// ## Setup (Ollama)
@@ -550,11 +652,11 @@ mod tests {
     /// MAGENT_TEST_API_URL=http://localhost:11434/v1 \
     /// MAGENT_TEST_MODEL=smollm2:135m \
     /// MAGENT_API_KEY=sk-... \
-    ///   cargo nextest run complete__should_get_response_from_real_api --run-ignored only
+    ///   cargo nextest run complete_messages__should_get_response_from_real_api --run-ignored only
     /// ```
     #[tokio::test]
     #[ignore]
-    async fn complete__should_get_response_from_real_api() {
+    async fn complete_messages__should_get_response_from_real_api() {
         let api_url = std::env::var("MAGENT_TEST_API_URL")
             .unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
         let model =
@@ -562,8 +664,9 @@ mod tests {
         let api_key = std::env::var("MAGENT_API_KEY").ok();
 
         let client = ChatClient::new(api_url, model, api_key);
+        let messages = vec![Message::user("Reply with exactly: hello")];
 
-        let result = client.complete("Reply with exactly: hello", None).await;
+        let result = client.complete_messages(&messages, &[]).await;
 
         let response = result.expect("LLM API call should succeed");
         assert!(!response.is_empty(), "Response should not be empty");
