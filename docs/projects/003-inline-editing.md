@@ -1,5 +1,7 @@
 # Inline Document Editing
 
+**Status:** Complete
+
 ## Goal
 
 Enable magent to modify document content outside the response markers. Today, all LLM output goes inside `<!-- magent:start/end -->` blocks. This means directives like "fix the links in the list above" or "sort this list" produce a *suggestion* in the response block, but the original content stays unchanged — the user must apply edits manually.

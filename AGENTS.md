@@ -37,6 +37,7 @@ Optimize for: simplicity, hackability, minimal dependencies, and long-term maint
 ## Documentation rules
 
 - `docs/TODO.md` — active tasks and next steps.
+- `docs/projects/` — project docs (numbered chronologically, each with a `Status:` line).
 - `docs/Adrs/` — architectural decision records for significant choices.
 - `docs/ARCHITECTURE.md` — high-level system overview (keep in sync with code).
 - Completed work should be checked off in TODO.md or moved out if no longer relevant.
@@ -51,7 +52,7 @@ Use when discussing the system more open-ended.
 ### Design mode
 Use when the task is exploratory/architectural or too large for a single PR.
 
-- Default output is a single document: `docs/<topic>.md`
+- Default output is a project doc: `docs/projects/NNN-<topic>.md`
 - Do not modify code unless explicitly requested (design mode is typically docs-only).
 - Consider max 2-3 options, recommend one.
 - End with a task breakdown of small PR-sized items, each with acceptance criteria.

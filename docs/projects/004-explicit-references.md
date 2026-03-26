@@ -1,5 +1,7 @@
 # Explicit References
 
+**Status:** Complete
+
 ## Goal
 
 Allow a directive to include content from other files in the knowledge base as additional context. Today, the LLM only sees the file containing the directive. For cross-document tasks ("compare these two files", "update this summary based on my rust notes"), the user has no way to point the agent at other files.

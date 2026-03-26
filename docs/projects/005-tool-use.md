@@ -1,5 +1,7 @@
 # Tool Use + Knowledge Base Search
 
+**Status:** Proposed
+
 ## Goal
 
 Give the agent the ability to gather information beyond the current document. The first concrete use: searching the knowledge base to find relevant files and content. This design also establishes the general tool-use framework that future tools (web fetch, messaging, etc.) will plug into.
@@ -211,7 +213,7 @@ The same path validation rules from explicit references apply: no traversal outs
 
 This tool is what enables "agent decides to expand a link" — the agent sees a `[linked file](path.md)` in the document, and if it judges the content would be helpful, it calls `read` to pull it in.
 
-**Note on large results:** for the initial implementation, tool results are embedded inline in the response block. This is fine for line-range reads and bounded search results. A future caching mechanism (see `docs/tool-result-caching.md`) will store large results in `.magent/tool-cache/` and reference them from the response block instead.
+**Note on large results:** for the initial implementation, tool results are embedded inline in the response block. This is fine for line-range reads and bounded search results. A future caching mechanism (see `docs/projects/006-tool-result-caching.md`) will store large results in `.magent/tool-cache/` and reference them from the response block instead.
 
 ## What the response looks like
 

@@ -1,4 +1,4 @@
-# Tool Result Caching (Draft)
+# Tool Result Caching
 
 **Status:** Draft — captures current thinking. Not ready for implementation.
 

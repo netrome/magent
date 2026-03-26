@@ -13,7 +13,7 @@ Response text here.
 <!-- magent:end -->
 ```
 
-The inline editing feature (see `docs/inline-editing.md`) introduces new structured blocks for proposed edits with status tracking. These need to be custom elements (`<magent-edit>`, `<magent-search>`, `<magent-replace>`) because:
+The inline editing feature (see `docs/projects/003-inline-editing.md`) introduces new structured blocks for proposed edits with status tracking. These need to be custom elements (`<magent-edit>`, `<magent-search>`, `<magent-replace>`) because:
 - They carry attributes (e.g., `status="proposed"`)
 - Their content is meaningful and should be visible to the user for review
 - Smart renderers (Obsidian plugins, custom CSS) should be able to style and interact with them

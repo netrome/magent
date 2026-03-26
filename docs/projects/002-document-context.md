@@ -1,5 +1,7 @@
 # Document Context for LLM Prompts
 
+**Status:** Complete
+
 ## Goal
 
 Enable the model to interact with the current document. Two use cases:
