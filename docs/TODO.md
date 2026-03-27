@@ -40,6 +40,9 @@
 
 ## Current
 
+### Parser robustness
+- [x] Skip `@magent` directives inside `<magent-response>` blocks
+
 ## Post-MVP
 
 - [ ] Config file (`.magent/config.toml`)

@@ -20,8 +20,23 @@ pub struct Directive {
 pub fn parse_directives(content: &str) -> Vec<Directive> {
     let lines: Vec<&str> = content.lines().collect();
     let mut directives = Vec::new();
+    let mut response_depth: usize = 0;
 
     for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "<magent-response>" {
+            response_depth += 1;
+            continue;
+        }
+        if trimmed == "</magent-response>" {
+            response_depth = response_depth.saturating_sub(1);
+            continue;
+        }
+
+        if response_depth > 0 {
+            continue;
+        }
+
         if let Some((prompt, options)) = extract_prompt(line) {
             let processed = has_response_block(&lines, i + 1);
             directives.push(Directive {
@@ -365,6 +380,76 @@ mod tests {
         assert_eq!(directives.len(), 1);
         assert_eq!(directives[0].prompt, "explain this");
         assert!(directives[0].options.is_empty());
+    }
+
+    #[test]
+    fn parse_directives__should_ignore_directives_inside_response_blocks() {
+        // Given — @magent inside a response block (e.g. from search results)
+        let content = "\
+@magent summarize the bug
+
+<magent-response>
+Search found:
+hello.md:1: @magent summarize the bug
+The root cause is...
+</magent-response>
+";
+
+        // When
+        let directives = parse_directives(content);
+
+        // Then — only the top-level directive, not the one inside the response
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].prompt, "summarize the bug");
+        assert!(directives[0].processed);
+    }
+
+    #[test]
+    fn parse_directives__should_ignore_directives_inside_nested_response_blocks() {
+        // Given — nested response blocks from re-executed queries
+        let content = "\
+@magent summarize the bug
+
+<magent-response>
+<magent-response>
+@magent nested query that should be ignored
+</magent-response>
+The answer.
+</magent-response>
+";
+
+        // When
+        let directives = parse_directives(content);
+
+        // Then
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].prompt, "summarize the bug");
+        assert!(directives[0].processed);
+    }
+
+    #[test]
+    fn parse_directives__should_find_directive_after_response_block() {
+        // Given — a new directive after a response block containing @magent text
+        let content = "\
+@magent first question
+
+<magent-response>
+search result: @magent first question
+Answer to first.
+</magent-response>
+
+@magent second question
+";
+
+        // When
+        let directives = parse_directives(content);
+
+        // Then
+        assert_eq!(directives.len(), 2);
+        assert_eq!(directives[0].prompt, "first question");
+        assert!(directives[0].processed);
+        assert_eq!(directives[1].prompt, "second question");
+        assert!(!directives[1].processed);
     }
 
     #[test]
