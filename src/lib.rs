@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
 
 use llm::LlmClient;
 use tools::browser::RunBrowser;
@@ -57,20 +58,21 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let client = llm::ChatClient::new(api_url, model, api_key);
 
             let browser = if tools::browser::is_available() {
-                println!("Browser tool available (agent-browser detected).");
+                info!("Browser tool available (agent-browser detected)");
                 Some(tools::browser::AgentBrowser)
             } else {
+                debug!("Browser tool not available");
                 None
             };
 
             let (tx, rx) = mpsc::channel(100);
             let _watcher = watcher::start(&directory, tx.clone())?;
 
-            println!("Watching {}...", directory.display());
+            info!(directory = %directory.display(), "Watching for directives");
 
             // Resume any in-progress responses left from a previous crash
             for path in scan_in_progress(&directory) {
-                println!("Resuming in-progress response in {}", path.display());
+                info!(path = %path.display(), "Resuming in-progress response");
                 let _ = tx.send(path).await;
             }
 
@@ -95,7 +97,7 @@ async fn process_events<B: RunBrowser>(
         let path = tokio::select! {
             Some(path) = rx.recv() => path,
             _ = tokio::signal::ctrl_c() => {
-                println!("\nShutting down.");
+                info!("Shutting down");
                 break;
             }
         };
@@ -103,7 +105,7 @@ async fn process_events<B: RunBrowser>(
         tokio::select! {
             _ = process_file(&path, client, root, browser) => {}
             _ = tokio::signal::ctrl_c() => {
-                println!("\nShutting down.");
+                info!("Shutting down");
                 break;
             }
         }
@@ -154,7 +156,7 @@ async fn process_file<B: RunBrowser>(
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to read {}: {e}", path.display());
+            error!(path = %path.display(), error = %e, "Failed to read file");
             return;
         }
     };
@@ -162,9 +164,9 @@ async fn process_file<B: RunBrowser>(
     // Handle accepted edits before processing new directives.
     // The file write triggers the watcher again for any remaining work.
     if let Some(updated) = edit::process_accepted_edits(&content) {
-        println!("Applying accepted edits in {}", path.display());
+        info!(path = %path.display(), "Applying accepted edits");
         if let Err(e) = std::fs::write(path, updated) {
-            eprintln!("Failed to write edits: {e}");
+            error!(path = %path.display(), error = %e, "Failed to write edits");
         }
         return;
     }
@@ -179,22 +181,24 @@ async fn process_file<B: RunBrowser>(
     }) {
         let document = match directive.status {
             parser::DirectiveStatus::Unprocessed => {
-                println!("Processing: @magent {}", directive.prompt);
+                info!(prompt = %directive.prompt, "Processing directive");
 
                 // Resolve context file references
-                let context_files =
-                    match context::resolve_context_files(&directive.options, root, path) {
-                        Ok(files) => files,
-                        Err(e) => {
-                            let error_msg = format!("**Error:** {e}");
-                            if let Err(e) =
-                                writer::write_response(path, &directive.prompt, &error_msg)
-                            {
-                                eprintln!("Failed to write response: {e}");
-                            }
-                            continue;
+                let context_files = match context::resolve_context_files(
+                    &directive.options,
+                    root,
+                    path,
+                ) {
+                    Ok(files) => files,
+                    Err(e) => {
+                        let error_msg = format!("**Error:** {e}");
+                        if let Err(e) = writer::write_response(path, &directive.prompt, &error_msg)
+                        {
+                            error!(path = %path.display(), error = %e, "Failed to write response");
                         }
-                    };
+                        continue;
+                    }
+                };
 
                 let filename = path
                     .file_name()
@@ -204,40 +208,40 @@ async fn process_file<B: RunBrowser>(
 
                 // Open in-progress response block before starting the LLM loop
                 if let Err(e) = writer::write_response_block(path, &directive.prompt, "", true) {
-                    eprintln!("Failed to open response block: {e}");
+                    error!(path = %path.display(), error = %e, "Failed to open response block");
                     continue;
                 }
 
                 document
             }
             parser::DirectiveStatus::InProgress => {
-                println!("Resuming: @magent {}", directive.prompt);
+                info!(prompt = %directive.prompt, "Resuming directive");
 
                 // Re-read file for up-to-date content
                 let current_content = match std::fs::read_to_string(path) {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("Failed to read {}: {e}", path.display());
+                        error!(path = %path.display(), error = %e, "Failed to read file");
                         return;
                     }
                 };
 
-                let context_files =
-                    match context::resolve_context_files(&directive.options, root, path) {
-                        Ok(files) => files,
-                        Err(e) => {
-                            let error_msg = format!("**Error:** {e}");
-                            if let Err(e) = writer::write_response_block(
-                                path,
-                                &directive.prompt,
-                                &error_msg,
-                                false,
-                            ) {
-                                eprintln!("Failed to write response: {e}");
-                            }
-                            continue;
+                let context_files = match context::resolve_context_files(
+                    &directive.options,
+                    root,
+                    path,
+                ) {
+                    Ok(files) => files,
+                    Err(e) => {
+                        let error_msg = format!("**Error:** {e}");
+                        if let Err(e) =
+                            writer::write_response_block(path, &directive.prompt, &error_msg, false)
+                        {
+                            error!(path = %path.display(), error = %e, "Failed to write response");
                         }
-                    };
+                        continue;
+                    }
+                };
 
                 let filename = path
                     .file_name()
@@ -278,22 +282,30 @@ async fn process_directive<B: RunBrowser>(
     while let Ok(file_content) = std::fs::read_to_string(path) {
         // Re-read file to detect user intervention
         match parser::extract_response_content(&file_content, prompt) {
-            None => break, // User deleted response block
+            None => {
+                debug!("Response block deleted by user, stopping");
+                break;
+            }
             Some(file_response) => {
                 if file_response != full_response {
-                    // User modified content — adopt and reconstruct messages
+                    debug!("User modified response, reconstructing messages");
                     full_response = file_response;
                     messages = tool::reconstruct_messages(&system_prompt, prompt, &full_response);
                 }
             }
         }
 
+        debug!(messages = messages.len(), "Sending LLM request");
         let llm_response = match client.complete_messages(&messages, &[TOOL_CALL_STOP]).await {
-            Ok(r) => r,
+            Ok(r) => {
+                debug!(len = r.len(), "LLM response received");
+                r
+            }
             Err(e) => {
+                error!(error = %e, "LLM request failed");
                 full_response.push_str(&format!("**Error:** {e}"));
                 if let Err(e) = writer::write_response_block(path, prompt, &full_response, false) {
-                    eprintln!("Failed to write error response: {e}");
+                    error!(error = %e, "Failed to write error response");
                 }
                 return;
             }
@@ -304,10 +316,11 @@ async fn process_directive<B: RunBrowser>(
         let (tool_call, _) = tool::parse_tool_call(&completed);
 
         let Some(call) = tool_call else {
+            debug!("No tool call, writing final response");
             full_response.push_str(&llm_response);
             let formatted = format_response(&full_response);
             if let Err(e) = writer::write_response_block(path, prompt, &formatted, false) {
-                eprintln!("Failed to write final response: {e}");
+                error!(error = %e, "Failed to write final response");
             }
             return;
         };
@@ -318,12 +331,14 @@ async fn process_directive<B: RunBrowser>(
 
         // Flush after LLM output
         if let Err(e) = writer::write_response_block(path, prompt, &full_response, true) {
-            eprintln!("Failed to flush response: {e}");
+            error!(error = %e, "Failed to flush response");
         }
 
         // Execute the tool
         tool_call_count += 1;
+        info!(tool = %call.tool, round = tool_call_count, "Executing tool");
         let output = execute_tool(&call, root, browser);
+        debug!(tool = %call.tool, output_len = output.len(), "Tool execution complete");
         let result = tool::ToolResult {
             tool: call.tool.clone(),
             output,
@@ -334,7 +349,7 @@ async fn process_directive<B: RunBrowser>(
 
         // Flush after tool result
         if let Err(e) = writer::write_response_block(path, prompt, &full_response, true) {
-            eprintln!("Failed to flush response: {e}");
+            error!(error = %e, "Failed to flush response");
         }
 
         // Feed result back for the next turn
@@ -342,9 +357,10 @@ async fn process_directive<B: RunBrowser>(
         messages.push(llm::Message::user(&result_text));
 
         if tool_call_count >= MAX_TOOL_CALLS {
+            warn!("Tool call limit reached ({MAX_TOOL_CALLS})");
             full_response.push_str("(Tool call limit reached.)");
             if let Err(e) = writer::write_response_block(path, prompt, &full_response, false) {
-                eprintln!("Failed to write response: {e}");
+                error!(error = %e, "Failed to write response");
             }
             return;
         }

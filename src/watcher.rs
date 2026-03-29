@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
+use tracing::debug;
 
 /// Start watching `dir` recursively for `.md` file changes.
 ///
@@ -25,6 +26,7 @@ pub fn start(
 
             for path in event.paths {
                 if is_markdown(&path) {
+                    debug!(path = %path.display(), kind = ?event.kind, "File change detected");
                     // If the receiver is dropped, stop sending silently.
                     let _ = tx.blocking_send(path);
                 }

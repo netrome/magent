@@ -3,6 +3,7 @@ use std::future::Future;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 /// System prompt template used when document context is provided.
 ///
@@ -191,6 +192,8 @@ impl LlmClient for ChatClient {
             stop: stop.to_vec(),
         };
 
+        debug!(url = %url, model = %self.model, messages = messages.len(), "LLM request");
+
         let mut req = self.http.post(&url).json(&body);
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
@@ -204,6 +207,7 @@ impl LlmClient for ChatClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            debug!(status = status.as_u16(), "LLM request failed");
             return Err(LlmError::Api {
                 status: status.as_u16(),
                 body,
@@ -215,12 +219,18 @@ impl LlmClient for ChatClient {
             .await
             .map_err(|e| LlmError::Parse(e.to_string()))?;
 
-        chat_response
+        let result = chat_response
             .choices
             .into_iter()
             .next()
             .map(|c| c.message.content)
-            .ok_or_else(|| LlmError::Parse("No choices in response".to_string()))
+            .ok_or_else(|| LlmError::Parse("No choices in response".to_string()));
+
+        if let Ok(ref content) = result {
+            debug!(len = content.len(), "LLM response OK");
+        }
+
+        result
     }
 }
 

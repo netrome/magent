@@ -63,6 +63,9 @@
 - [ ] PR 4: Incremental writing in the tool-use loop
 - [ ] PR 5: Crash recovery
 
+### Structured logging
+- [x] Replace ad-hoc `println` statements with `tracing` logs so key flows (directive processing, LLM requests/responses, tool calls, errors) are easy to follow.
+
 ## Post-MVP
 
 - [ ] Config file (`.magent/config.toml`)
