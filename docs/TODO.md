@@ -47,5 +47,7 @@
 
 - [ ] Config file (`.magent/config.toml`)
 - [ ] Scheduled directives (`in:`, `at:`)
+- [ ] Edit arbitrary files.
+- [ ] Code execution / scripts (like python scripts).
 - [ ] Per-directive model selection
 - [ ] Concurrent directive processing
