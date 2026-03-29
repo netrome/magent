@@ -45,7 +45,7 @@ Because the file is the source of truth, intervention is just file editing:
 - **Rewind**: delete tool calls from the end of the response. The daemon re-reads, sees a shorter history, and continues from the earlier point.
 - **Modify tool results**: edit a `<magent-tool-result>` in the response. The daemon picks up the modified result on the next re-read.
 - **Stop**: delete the response block entirely. The directive becomes unprocessed (user can choose whether to re-trigger it).
-- **Pause**: a convention for this may emerge, but the simplest version is: save the file with a change that causes the daemon to stop (e.g., removing the `status` attribute while keeping the content).
+- **Pause**: change `status="in-progress"` to `status="paused"`. The daemon sees a paused response and skips it. To resume, change back to `status="in-progress"`.
 
 ### Response block format
 

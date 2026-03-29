@@ -26,6 +26,7 @@ Today, `process_file` looks for unprocessed directives (no response block). With
 |---|---|---|
 | Unprocessed | No response block after directive | Start processing (open in-progress response) |
 | In-progress | `<magent-response status="in-progress">` | Continue processing (resume tool loop) |
+| Paused | `<magent-response status="paused">` | Skip (user resumes by changing to `in-progress`) |
 | Complete | `<magent-response>` (no status) | Skip |
 
 ### Directive status in the parser
@@ -36,6 +37,7 @@ Today, `process_file` looks for unprocessed directives (no response block). With
 enum DirectiveStatus {
     Unprocessed,
     InProgress,
+    Paused,
     Complete,
 }
 ```
@@ -163,13 +165,9 @@ Actually, I want you to focus on this result instead: Enterprise plan is $999/mo
 ```
 The agent sees the modified result and continues accordingly.
 
-**Stop** — delete the response block. The directive becomes unprocessed. The daemon won't reprocess it automatically (it only processes in response to file changes, and the deletion itself is the change that was already handled).
+**Stop** — delete the response block entirely. This triggers the watcher, which sees an unprocessed directive and starts again. This means "retry." To truly stop, delete the `@magent` line too. Both are intuitive.
 
-Wait — actually, deleting the response block triggers the watcher, and `process_file` would see an unprocessed directive. To avoid an infinite retry loop, we need a rule: the daemon should only start processing an unprocessed directive when it detects it for the first time (i.e., it wasn't previously in-progress). Alternatively, a simpler rule: the daemon processes what the watcher gives it. If the user deletes the response, that triggers a file change, the daemon sees an unprocessed directive, and starts again. If the user doesn't want that, they can delete the `@magent` line too.
-
-This is actually fine. Deleting just the response block means "retry." Deleting the directive too means "stop." Both are intuitive.
-
-**Pause** — remove the `status="in-progress"` attribute (keep the content). The daemon re-reads, sees a complete response, and stops. To resume, the user adds `status="in-progress"` back.
+**Pause** — change `status="in-progress"` to `status="paused"`. The daemon re-reads, sees a paused response, and stops. To resume, change back to `status="in-progress"` — the watcher triggers and the daemon picks up where it left off.
 
 ## Non-goals
 
@@ -199,6 +197,7 @@ Extend the parser to handle `<magent-response status="in-progress">`.
 **Acceptance criteria:**
 - `<magent-response>` → `Complete`
 - `<magent-response status="in-progress">` → `InProgress`
+- `<magent-response status="paused">` → `Paused`
 - No response block → `Unprocessed`
 - `extract_response_content` returns correct content for each case.
 - Existing tests updated and passing.
