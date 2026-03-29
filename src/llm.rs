@@ -89,7 +89,7 @@ Returns: the file content with line numbers.
 === END TOOLS ===";
 
 /// A chat message with role and content.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Message {
     pub role: String,
     pub content: String,

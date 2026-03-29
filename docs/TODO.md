@@ -1,7 +1,7 @@
 # TODO
 
 ### Incremental response writing
-- [ ] Message reconstruction from response content
+- [x] Message reconstruction from response content
 - [ ] Incremental writing in the tool-use loop
 - [ ] Crash recovery
 
