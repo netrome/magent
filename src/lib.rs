@@ -64,9 +64,15 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let (tx, rx) = mpsc::channel(100);
-            let _watcher = watcher::start(&directory, tx)?;
+            let _watcher = watcher::start(&directory, tx.clone())?;
 
             println!("Watching {}...", directory.display());
+
+            // Resume any in-progress responses left from a previous crash
+            for path in scan_in_progress(&directory) {
+                println!("Resuming in-progress response in {}", path.display());
+                let _ = tx.send(path).await;
+            }
 
             process_events(rx, &client, &directory, browser.as_ref()).await;
 
@@ -99,6 +105,38 @@ async fn process_events<B: RunBrowser>(
             _ = tokio::signal::ctrl_c() => {
                 println!("\nShutting down.");
                 break;
+            }
+        }
+    }
+}
+
+/// Scan a directory recursively for `.md` files with in-progress response blocks.
+///
+/// Used on startup to resume work interrupted by a crash.
+fn scan_in_progress(dir: &Path) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    scan_dir(dir, &mut results);
+    results
+}
+
+fn scan_dir(dir: &Path, results: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_dir(&path, results);
+        } else if path.extension().is_some_and(|ext| ext == "md")
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            let directives = parser::parse_directives(&content);
+            if directives
+                .iter()
+                .any(|d| d.status == parser::DirectiveStatus::InProgress)
+            {
+                results.push(path);
             }
         }
     }
@@ -1957,5 +1995,133 @@ Found 3 results.
         let response = "Just a regular response with no tool calls.";
         let completed = complete_tool_call_tag(response);
         assert_eq!(completed, response);
+    }
+
+    // --- scan_in_progress ---
+
+    #[test]
+    fn scan_in_progress__should_find_files_with_in_progress_responses() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        create_file(
+            dir.path(),
+            "active.md",
+            "@magent do something\n\n<magent-response status=\"in-progress\">\nWorking...\n</magent-response>\n",
+        );
+        create_file(
+            dir.path(),
+            "done.md",
+            "@magent do something\n\n<magent-response>\nDone.\n</magent-response>\n",
+        );
+
+        // When
+        let paths = scan_in_progress(dir.path());
+
+        // Then
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].file_name().unwrap(), "active.md");
+    }
+
+    #[test]
+    fn scan_in_progress__should_return_empty_when_no_in_progress() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        create_file(
+            dir.path(),
+            "done.md",
+            "@magent hello\n\n<magent-response>\nHi!\n</magent-response>\n",
+        );
+        create_file(dir.path(), "unprocessed.md", "@magent hello\n");
+
+        // When
+        let paths = scan_in_progress(dir.path());
+
+        // Then
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn scan_in_progress__should_find_files_in_subdirectories() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        create_file(
+            dir.path(),
+            "sub/nested.md",
+            "@magent task\n\n<magent-response status=\"in-progress\">\nPartial.\n</magent-response>\n",
+        );
+
+        // When
+        let paths = scan_in_progress(dir.path());
+
+        // Then
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].file_name().unwrap(), "nested.md");
+    }
+
+    #[test]
+    fn scan_in_progress__should_ignore_non_markdown_files() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        create_file(
+            dir.path(),
+            "notes.txt",
+            "@magent task\n\n<magent-response status=\"in-progress\">\nWorking.\n</magent-response>\n",
+        );
+
+        // When
+        let paths = scan_in_progress(dir.path());
+
+        // Then
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn scan_in_progress__should_skip_paused_responses() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        create_file(
+            dir.path(),
+            "paused.md",
+            "@magent task\n\n<magent-response status=\"paused\">\nPaused.\n</magent-response>\n",
+        );
+
+        // When
+        let paths = scan_in_progress(dir.path());
+
+        // Then
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn scan_in_progress__should_handle_multiple_in_progress_files() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        create_file(
+            dir.path(),
+            "a.md",
+            "@magent task a\n\n<magent-response status=\"in-progress\">\nA.\n</magent-response>\n",
+        );
+        create_file(
+            dir.path(),
+            "b.md",
+            "@magent task b\n\n<magent-response status=\"in-progress\">\nB.\n</magent-response>\n",
+        );
+        create_file(
+            dir.path(),
+            "c.md",
+            "@magent task c\n\n<magent-response>\nDone.\n</magent-response>\n",
+        );
+
+        // When
+        let paths = scan_in_progress(dir.path());
+
+        // Then
+        assert_eq!(paths.len(), 2);
+        let names: Vec<_> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert!(names.contains(&"a.md"));
+        assert!(names.contains(&"b.md"));
     }
 }
