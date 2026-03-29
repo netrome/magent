@@ -47,6 +47,13 @@
 - [x] PR 1-3: Runtime detection, browser tool implementation, wiring + turn limit
 - [x] PR 4: End-to-end testing with realistic accessibility tree fixtures
 
+### Incremental response writing (project 008)
+- [ ] PR 1: Response block status parsing
+- [ ] PR 2: Writer support for in-progress response blocks
+- [ ] PR 3: Message reconstruction from response content
+- [ ] PR 4: Incremental writing in the tool-use loop
+- [ ] PR 5: Crash recovery
+
 ## Post-MVP
 
 - [ ] Config file (`.magent/config.toml`)
