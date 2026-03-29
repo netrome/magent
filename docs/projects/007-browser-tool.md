@@ -376,6 +376,18 @@ Raise `MAX_TOOL_CALLS` from 5 to 10.
 
 Add cleanup to close any open browser session on daemon exit (best-effort `agent-browser close`).
 
+## Related work: incremental response writing
+
+Currently, `process_directive` builds the full response in memory and writes it to the file once at the end. With browser workflows spanning 8-10 tool calls, this means:
+
+1. **No visibility**: the user can't see what the agent is doing until it's done.
+2. **No interruption**: no way to stop a runaway browser interaction mid-flow.
+3. **Lost work on crash**: if the daemon crashes at step 7 of 10, all progress is lost.
+
+**Incremental writing** — flushing each tool call/result to the file as it happens — would solve all three. This is a separate feature that touches the core processing loop and writer, not specific to the browser tool. It introduces its own design questions (in-progress markers, watcher ignoring its own writes, partial response format).
+
+The browser tool does not depend on incremental writing, but benefits significantly from it. It should be designed and implemented as a follow-up, potentially before or alongside the browser work.
+
 ## Design decisions to revisit later
 
 - **Per-directive tool call limits**: let users write `@magent turns:15 ...` for complex browser workflows.
