@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
 
 use llm::LlmClient;
-use tools::browser::BrowserExecutor;
+use tools::browser::RunBrowser;
 
 #[derive(Parser)]
 #[command(name = "magent", about = "A markdown-native AI agent daemon")]
@@ -68,7 +68,7 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             println!("Watching {}...", directory.display());
 
-            process_events(rx, &client, &directory, &browser).await;
+            process_events(rx, &client, &directory, browser.as_ref()).await;
 
             if browser.is_some() {
                 tools::browser::close_session();
@@ -79,11 +79,11 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn process_events<B: BrowserExecutor>(
+async fn process_events<B: RunBrowser>(
     mut rx: mpsc::Receiver<PathBuf>,
     client: &impl LlmClient,
     root: &Path,
-    browser: &Option<B>,
+    browser: Option<&B>,
 ) {
     loop {
         let path = tokio::select! {
@@ -107,11 +107,11 @@ async fn process_events<B: BrowserExecutor>(
 const MAX_TOOL_CALLS: usize = 10;
 const TOOL_CALL_STOP: &str = "</magent-tool-call>";
 
-async fn process_file<B: BrowserExecutor>(
+async fn process_file<B: RunBrowser>(
     path: &Path,
     client: &impl LlmClient,
     root: &Path,
-    browser: &Option<B>,
+    browser: Option<&B>,
 ) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -170,12 +170,12 @@ async fn process_file<B: BrowserExecutor>(
 /// calls tools (search, read, browser), executes them and feeds results back
 /// for up to `MAX_TOOL_CALLS` rounds. Returns the full response including
 /// tool call/result history.
-async fn process_directive<B: BrowserExecutor>(
+async fn process_directive<B: RunBrowser>(
     client: &impl LlmClient,
     prompt: &str,
     document: &str,
     root: &Path,
-    browser: &Option<B>,
+    browser: Option<&B>,
 ) -> String {
     let mut messages = vec![
         llm::Message::system(llm::build_system_prompt(document, browser.is_some())),
@@ -240,16 +240,12 @@ fn complete_tool_call_tag(response: &str) -> String {
     }
 }
 
-fn execute_tool<B: BrowserExecutor>(
-    call: &tool::ToolCall,
-    root: &Path,
-    browser: &Option<B>,
-) -> String {
+fn execute_tool<B: RunBrowser>(call: &tool::ToolCall, root: &Path, browser: Option<&B>) -> String {
     match call.tool.as_str() {
         "search" => tools::search::SearchTool::new(root.to_path_buf()).execute(&call.input),
         "read" => tools::read::ReadTool::new(root.to_path_buf()).execute(&call.input),
         "browser" => match browser {
-            Some(b) => b.execute(&call.input),
+            Some(b) => b.run_browser(&call.input),
             None => "Error: browser tool is not available".to_string(),
         },
         _ => format!("Unknown tool: {}", call.tool),
@@ -371,14 +367,14 @@ mod tests {
 
     /// Stub browser executor for tests that don't use browser features.
     struct NoBrowser;
-    impl BrowserExecutor for NoBrowser {
-        fn execute(&self, _input: &str) -> String {
+    impl RunBrowser for NoBrowser {
+        fn run_browser(&self, _input: &str) -> String {
             unreachable!("browser should not be called in this test")
         }
     }
 
     /// Convenience: no browser available.
-    const NO_BROWSER: Option<NoBrowser> = None;
+    const NO_BROWSER: Option<&NoBrowser> = None;
 
     fn create_file(dir: &std::path::Path, name: &str, content: &str) {
         let path = dir.join(name);
@@ -445,7 +441,7 @@ mod tests {
         let client = FakeLlm("Rayleigh scattering.".to_string());
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -463,7 +459,7 @@ mod tests {
         let client = FailingLlm("Connection refused (http://localhost:11434/v1)".to_string());
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -489,7 +485,7 @@ mod tests {
         };
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         assert_eq!(client.call_count.load(Ordering::Relaxed), 0);
@@ -504,7 +500,7 @@ mod tests {
         let client = FakeLlm("Answer.".to_string());
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -524,7 +520,7 @@ mod tests {
         let client = MessageCaptureLlm::new();
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let captured = client.captured_messages.lock().unwrap();
@@ -560,7 +556,7 @@ Fixed the URL:
         let client = FakeLlm(llm_response.to_string());
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -586,7 +582,7 @@ Fixed the URL:
         let client = FakeLlm("Rust is a systems programming language.".to_string());
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -612,7 +608,7 @@ Fixed the URL:
         let client = FakeLlm(llm_response.to_string());
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then — the written response should be parseable by parse_edit_blocks
         let content = std::fs::read_to_string(&path).unwrap();
@@ -657,7 +653,7 @@ Fixed:
         };
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then — edit applied, LLM not called
         let content = std::fs::read_to_string(&path).unwrap();
@@ -700,7 +696,7 @@ Fixed the URL:
         let client = FakeLlm(llm_response.to_string());
 
         // Step 1: Process directive — should propose edits
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("status=\"proposed\""));
         assert!(
@@ -713,7 +709,7 @@ Fixed the URL:
         std::fs::write(&path, &accepted).unwrap();
 
         // Step 3: Process acceptance — should apply edits
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
         let final_content = std::fs::read_to_string(&path).unwrap();
         assert!(
             final_content.contains("- [Rust](https://rust-lang.org)"),
@@ -739,7 +735,7 @@ Fixed the URL:
         let client = MessageCaptureLlm::new();
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let captured = client.captured_messages.lock().unwrap();
@@ -768,7 +764,7 @@ Fixed the URL:
         let client = MessageCaptureLlm::new();
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then — system message should be plain content, no headers
         let captured = client.captured_messages.lock().unwrap();
@@ -790,7 +786,7 @@ Fixed the URL:
         let client = FakeLlm("Should not be called.".to_string());
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -811,7 +807,7 @@ Fixed the URL:
         let client = FakeLlm("Should not be called.".to_string());
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -846,7 +842,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -878,7 +874,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -910,7 +906,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -933,7 +929,7 @@ Fixed the URL:
         let client = MultiTurnLlm::new(vec![always_tool_call; MAX_TOOL_CALLS + 1]);
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -956,7 +952,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -973,7 +969,7 @@ Fixed the URL:
         let client = FakeLlm("Rust is a systems programming language.".to_string());
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then: works exactly as before
         let content = std::fs::read_to_string(&path).unwrap();
@@ -998,7 +994,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1028,8 +1024,8 @@ Fixed the URL:
         }
     }
 
-    impl BrowserExecutor for FakeBrowser {
-        fn execute(&self, input: &str) -> String {
+    impl RunBrowser for FakeBrowser {
+        fn run_browser(&self, input: &str) -> String {
             let (expected, response) = self
                 .responses
                 .lock()
@@ -1071,7 +1067,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path(), &browser).await;
+        process_file(&path, &client, dir.path(), browser.as_ref()).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1118,7 +1114,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path(), &browser).await;
+        process_file(&path, &client, dir.path(), browser.as_ref()).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1158,7 +1154,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path(), &browser).await;
+        process_file(&path, &client, dir.path(), browser.as_ref()).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1181,7 +1177,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -1199,7 +1195,7 @@ Fixed the URL:
         let client = MessageCaptureLlm::new();
 
         // When
-        process_file(&path, &client, dir.path(), &browser).await;
+        process_file(&path, &client, dir.path(), browser.as_ref()).await;
 
         // Then
         let captured = client.captured_messages.lock().unwrap();
@@ -1220,7 +1216,7 @@ Fixed the URL:
         let client = MessageCaptureLlm::new();
 
         // When
-        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
 
         // Then
         let captured = client.captured_messages.lock().unwrap();

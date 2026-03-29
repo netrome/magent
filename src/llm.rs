@@ -242,6 +242,7 @@ Key commands:
 - get text <ref> — get text content of an element
 - get title — get page title
 - get url — get current URL
+- screenshot <file> — save a screenshot
 - back — go back
 - close — close browser
 
@@ -257,8 +258,8 @@ pub fn build_system_prompt(document: &str, browser_available: bool) -> String {
         ""
     };
     SYSTEM_PROMPT_TEMPLATE
-        .replace("{document}", document)
         .replace("{browser_tool}", browser_section)
+        .replace("{document}", document)
 }
 
 // -- Request/response types for OpenAI-compatible API --

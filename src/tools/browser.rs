@@ -4,8 +4,8 @@ use std::process::{Command, Stdio};
 ///
 /// The real implementation shells out to `agent-browser`. Tests use a fake
 /// that returns canned responses.
-pub trait BrowserExecutor {
-    fn execute(&self, input: &str) -> String;
+pub trait RunBrowser {
+    fn run_browser(&self, input: &str) -> String;
 }
 
 /// Check whether the `agent-browser` CLI is available on the system.
@@ -47,8 +47,8 @@ const ALLOWED_COMMANDS: &[&str] = &[
     "close",
 ];
 
-impl BrowserExecutor for AgentBrowser {
-    fn execute(&self, input: &str) -> String {
+impl RunBrowser for AgentBrowser {
+    fn run_browser(&self, input: &str) -> String {
         let args = parse_command(input);
 
         if args.is_empty() {
@@ -215,42 +215,42 @@ mod tests {
     #[test]
     fn execute__should_reject_disallowed_command() {
         let browser = AgentBrowser;
-        let result = browser.execute("eval document.title");
+        let result = browser.run_browser("eval document.title");
         assert_eq!(result, "Error: command 'eval' is not allowed");
     }
 
     #[test]
     fn execute__should_reject_empty_input() {
         let browser = AgentBrowser;
-        assert_eq!(browser.execute(""), "Error: empty browser command");
-        assert_eq!(browser.execute("   "), "Error: empty browser command");
+        assert_eq!(browser.run_browser(""), "Error: empty browser command");
+        assert_eq!(browser.run_browser("   "), "Error: empty browser command");
     }
 
     #[test]
     fn execute__should_reject_network_route() {
         let browser = AgentBrowser;
-        let result = browser.execute("network route **/* https://mock.example.com");
+        let result = browser.run_browser("network route **/* https://mock.example.com");
         assert_eq!(result, "Error: command 'network' is not allowed");
     }
 
     #[test]
     fn execute__should_reject_storage_manipulation() {
         let browser = AgentBrowser;
-        let result = browser.execute("storage local set key value");
+        let result = browser.run_browser("storage local set key value");
         assert_eq!(result, "Error: command 'storage' is not allowed");
     }
 
     #[test]
     fn execute__should_reject_upload() {
         let browser = AgentBrowser;
-        let result = browser.execute("upload @e3 /path/to/file");
+        let result = browser.run_browser("upload @e3 /path/to/file");
         assert_eq!(result, "Error: command 'upload' is not allowed");
     }
 
     #[test]
     fn execute__should_reject_set_headers() {
         let browser = AgentBrowser;
-        let result = browser.execute("set headers X-Custom value");
+        let result = browser.run_browser("set headers X-Custom value");
         assert_eq!(result, "Error: command 'set' is not allowed");
     }
 }
