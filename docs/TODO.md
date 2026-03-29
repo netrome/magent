@@ -1,6 +1,15 @@
 # TODO
 
+### Incremental response writing
+- [ ] Writer support for in-progress response blocks
+- [ ] Message reconstruction from response content
+- [ ] Incremental writing in the tool-use loop
+- [ ] Crash recovery
+
 ## Done
+
+### Incremental response writing
+- [x] Response block status parsing
 
 ### MVP
 - [x] PR 1: Project skeleton + CLI (`clap`, arg parsing, signal handling)

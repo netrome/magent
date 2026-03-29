@@ -57,7 +57,7 @@ pub fn insert_response(content: &str, prompt: &str, response: &str) -> Option<St
 
     let directive = directives
         .iter()
-        .find(|d| !d.processed && d.prompt == prompt)?;
+        .find(|d| d.status == parser::DirectiveStatus::Unprocessed && d.prompt == prompt)?;
 
     let lines: Vec<&str> = content.lines().collect();
     let insert_after = directive.line - 1; // convert 1-based to 0-based index
@@ -286,6 +286,6 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let directives = parser::parse_directives(&content);
         assert_eq!(directives.len(), 1);
-        assert!(directives[0].processed);
+        assert_eq!(directives[0].status, parser::DirectiveStatus::Complete);
     }
 }

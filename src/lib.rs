@@ -133,7 +133,10 @@ async fn process_file<B: RunBrowser>(
 
     let directives = parser::parse_directives(&content);
 
-    for directive in directives.iter().filter(|d| !d.processed) {
+    for directive in directives
+        .iter()
+        .filter(|d| d.status == parser::DirectiveStatus::Unprocessed)
+    {
         println!("Processing: @magent {}", directive.prompt);
 
         // Resolve context file references
@@ -506,8 +509,8 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let directives = parser::parse_directives(&content);
         assert_eq!(directives.len(), 2);
-        assert!(directives[0].processed);
-        assert!(directives[1].processed);
+        assert_eq!(directives[0].status, parser::DirectiveStatus::Complete);
+        assert_eq!(directives[1].status, parser::DirectiveStatus::Complete);
     }
 
     #[tokio::test]

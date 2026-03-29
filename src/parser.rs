@@ -1,13 +1,26 @@
 use std::collections::HashMap;
 
+/// Processing state of a directive's response block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectiveStatus {
+    /// No response block exists yet.
+    Unprocessed,
+    /// The daemon is actively working on this directive.
+    InProgress,
+    /// The user has paused execution.
+    Paused,
+    /// The response is finished.
+    Complete,
+}
+
 /// A parsed `@magent` directive found in markdown content.
 pub struct Directive {
     /// The prompt text after `@magent`.
     pub prompt: String,
     /// 1-based line number where the directive appears.
     pub line: usize,
-    /// Whether this directive already has a response block.
-    pub processed: bool,
+    /// Processing state of this directive.
+    pub status: DirectiveStatus,
     /// Key-value options parsed from `@magent(key: value, ...)`.
     pub options: HashMap<String, String>,
 }
@@ -24,7 +37,7 @@ pub fn parse_directives(content: &str) -> Vec<Directive> {
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if trimmed == "<magent-response>" {
+        if parse_response_open_tag(trimmed).is_some() {
             response_depth += 1;
             continue;
         }
@@ -38,11 +51,11 @@ pub fn parse_directives(content: &str) -> Vec<Directive> {
         }
 
         if let Some((prompt, options)) = extract_prompt(line) {
-            let processed = has_response_block(&lines, i + 1);
+            let status = response_block_status(&lines, i + 1);
             directives.push(Directive {
                 prompt,
                 line: i + 1,
-                processed,
+                status,
                 options,
             });
         }
@@ -119,19 +132,92 @@ fn parse_options(input: &str) -> HashMap<String, String> {
     options
 }
 
-/// Check whether a `<magent-response>` block appears in `lines[from..]`
-/// before the next `@magent` directive.
-fn has_response_block(lines: &[&str], from: usize) -> bool {
+/// Try to parse a `<magent-response>` opening tag, returning its status.
+///
+/// Returns `None` if the line is not a response tag. Returns the appropriate
+/// `DirectiveStatus` based on the `status` attribute: `Complete` for bare
+/// `<magent-response>`, `InProgress` for `status="in-progress"`, `Paused`
+/// for `status="paused"`.
+fn parse_response_open_tag(trimmed: &str) -> Option<DirectiveStatus> {
+    if trimmed == "<magent-response>" {
+        return Some(DirectiveStatus::Complete);
+    }
+    if trimmed.starts_with("<magent-response ") && trimmed.ends_with('>') {
+        let status = match extract_attribute(trimmed, "status") {
+            Some("in-progress") => DirectiveStatus::InProgress,
+            Some("paused") => DirectiveStatus::Paused,
+            _ => DirectiveStatus::Complete,
+        };
+        return Some(status);
+    }
+    None
+}
+
+/// Extract the value of a named attribute from an HTML-like tag.
+///
+/// Handles `name="value"` syntax. Returns `None` if the attribute is not found.
+fn extract_attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let pattern = format!("{name}=\"");
+    let start = tag.find(&pattern)? + pattern.len();
+    let rest = &tag[start..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
+/// Determine the status of a directive by looking for a response block
+/// in `lines[from..]` before the next `@magent` directive.
+fn response_block_status(lines: &[&str], from: usize) -> DirectiveStatus {
     for line in &lines[from..] {
         let trimmed = line.trim();
-        if trimmed == "<magent-response>" {
-            return true;
+        if let Some(status) = parse_response_open_tag(trimmed) {
+            return status;
         }
         if extract_prompt(line).is_some() {
-            return false;
+            return DirectiveStatus::Unprocessed;
         }
     }
-    false
+    DirectiveStatus::Unprocessed
+}
+
+/// Extract the text content inside the response block for a given directive.
+///
+/// Finds the first directive matching `prompt`, then extracts everything
+/// between its `<magent-response ...>` and `</magent-response>` tags.
+/// Returns `None` if the directive has no response block.
+pub fn extract_response_content(content: &str, prompt: &str) -> Option<String> {
+    let directives = parse_directives(content);
+    let directive = directives
+        .iter()
+        .find(|d| d.prompt == prompt && d.status != DirectiveStatus::Unprocessed)?;
+
+    let lines: Vec<&str> = content.lines().collect();
+    let after_directive = directive.line; // line is 1-based, so this is the 0-based index after
+
+    // Find the opening tag
+    let open_idx = lines[after_directive..]
+        .iter()
+        .position(|l| parse_response_open_tag(l.trim()).is_some())?
+        + after_directive;
+
+    // Find the matching closing tag (handle nesting)
+    let mut depth: usize = 1;
+    let mut close_idx = None;
+    for (i, line) in lines[open_idx + 1..].iter().enumerate() {
+        let trimmed = line.trim();
+        if parse_response_open_tag(trimmed).is_some() {
+            depth += 1;
+        } else if trimmed == "</magent-response>" {
+            depth -= 1;
+            if depth == 0 {
+                close_idx = Some(open_idx + 1 + i);
+                break;
+            }
+        }
+    }
+
+    let close_idx = close_idx?;
+    let content_lines = &lines[open_idx + 1..close_idx];
+    Some(content_lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -151,7 +237,7 @@ mod tests {
         assert_eq!(directives.len(), 1);
         assert_eq!(directives[0].prompt, "why is the sky blue?");
         assert_eq!(directives[0].line, 1);
-        assert!(!directives[0].processed);
+        assert_eq!(directives[0].status, DirectiveStatus::Unprocessed);
         assert!(directives[0].options.is_empty());
     }
 
@@ -169,7 +255,7 @@ mod tests {
 
         // Then
         assert_eq!(directives.len(), 1);
-        assert!(directives[0].processed);
+        assert_eq!(directives[0].status, DirectiveStatus::Complete);
     }
 
     #[test]
@@ -201,9 +287,9 @@ mod tests {
         // Then
         assert_eq!(directives.len(), 2);
         assert_eq!(directives[0].prompt, "first question");
-        assert!(directives[0].processed);
+        assert_eq!(directives[0].status, DirectiveStatus::Complete);
         assert_eq!(directives[1].prompt, "second question");
-        assert!(!directives[1].processed);
+        assert_eq!(directives[1].status, DirectiveStatus::Unprocessed);
     }
 
     #[test]
@@ -260,7 +346,7 @@ mod tests {
 
         // Then
         assert_eq!(directives.len(), 1);
-        assert!(directives[0].processed);
+        assert_eq!(directives[0].status, DirectiveStatus::Complete);
     }
 
     #[test]
@@ -279,8 +365,8 @@ mod tests {
 
         // Then
         assert_eq!(directives.len(), 2);
-        assert!(!directives[0].processed);
-        assert!(directives[1].processed);
+        assert_eq!(directives[0].status, DirectiveStatus::Unprocessed);
+        assert_eq!(directives[1].status, DirectiveStatus::Complete);
     }
 
     #[test]
@@ -401,7 +487,7 @@ The root cause is...
         // Then — only the top-level directive, not the one inside the response
         assert_eq!(directives.len(), 1);
         assert_eq!(directives[0].prompt, "summarize the bug");
-        assert!(directives[0].processed);
+        assert_eq!(directives[0].status, DirectiveStatus::Complete);
     }
 
     #[test]
@@ -424,7 +510,7 @@ The answer.
         // Then
         assert_eq!(directives.len(), 1);
         assert_eq!(directives[0].prompt, "summarize the bug");
-        assert!(directives[0].processed);
+        assert_eq!(directives[0].status, DirectiveStatus::Complete);
     }
 
     #[test]
@@ -447,9 +533,9 @@ Answer to first.
         // Then
         assert_eq!(directives.len(), 2);
         assert_eq!(directives[0].prompt, "first question");
-        assert!(directives[0].processed);
+        assert_eq!(directives[0].status, DirectiveStatus::Complete);
         assert_eq!(directives[1].prompt, "second question");
-        assert!(!directives[1].processed);
+        assert_eq!(directives[1].status, DirectiveStatus::Unprocessed);
     }
 
     #[test]
@@ -460,5 +546,237 @@ Answer to first.
         // Then
         assert_eq!(options.get("context").unwrap(), "a.md, b.md");
         assert_eq!(options.get("model").unwrap(), "claude");
+    }
+
+    #[test]
+    fn parse_directives__should_detect_in_progress_response() {
+        // Given
+        let content = "\
+@magent find the pricing page
+
+<magent-response status=\"in-progress\">
+Let me search for that.
+</magent-response>
+";
+
+        // When
+        let directives = parse_directives(content);
+
+        // Then
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].status, DirectiveStatus::InProgress);
+    }
+
+    #[test]
+    fn parse_directives__should_detect_paused_response() {
+        // Given
+        let content = "\
+@magent find the pricing page
+
+<magent-response status=\"paused\">
+Let me search for that.
+</magent-response>
+";
+
+        // When
+        let directives = parse_directives(content);
+
+        // Then
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].status, DirectiveStatus::Paused);
+    }
+
+    #[test]
+    fn parse_directives__should_treat_unknown_status_as_complete() {
+        // Given
+        let content = "\
+@magent hello
+
+<magent-response status=\"unknown\">
+Some text.
+</magent-response>
+";
+
+        // When
+        let directives = parse_directives(content);
+
+        // Then
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].status, DirectiveStatus::Complete);
+    }
+
+    #[test]
+    fn parse_directives__should_skip_directives_inside_in_progress_response() {
+        // Given — directive text inside an in-progress response block
+        let content = "\
+@magent summarize the bug
+
+<magent-response status=\"in-progress\">
+Found: @magent summarize the bug
+Working on it...
+</magent-response>
+";
+
+        // When
+        let directives = parse_directives(content);
+
+        // Then
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].status, DirectiveStatus::InProgress);
+    }
+
+    #[test]
+    fn extract_response_content__should_return_content_of_complete_response() {
+        // Given
+        let content = "\
+@magent explain rust
+
+<magent-response>
+Rust is a systems language.
+It emphasizes safety.
+</magent-response>
+";
+
+        // When
+        let result = extract_response_content(content, "explain rust");
+
+        // Then
+        assert_eq!(
+            result.unwrap(),
+            "Rust is a systems language.\nIt emphasizes safety."
+        );
+    }
+
+    #[test]
+    fn extract_response_content__should_return_content_of_in_progress_response() {
+        // Given
+        let content = "\
+@magent find pricing
+
+<magent-response status=\"in-progress\">
+Let me search.
+
+<magent-tool-call>
+search | query: pricing
+</magent-tool-call>
+<magent-tool-result>
+Found 2 results.
+</magent-tool-result>
+</magent-response>
+";
+
+        // When
+        let result = extract_response_content(content, "find pricing");
+
+        // Then
+        let expected = "\
+Let me search.
+
+<magent-tool-call>
+search | query: pricing
+</magent-tool-call>
+<magent-tool-result>
+Found 2 results.
+</magent-tool-result>";
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn extract_response_content__should_return_none_for_unprocessed_directive() {
+        // Given
+        let content = "@magent explain rust\n";
+
+        // When
+        let result = extract_response_content(content, "explain rust");
+
+        // Then
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn extract_response_content__should_return_none_for_nonexistent_prompt() {
+        // Given
+        let content = "\
+@magent explain rust
+
+<magent-response>
+Some answer.
+</magent-response>
+";
+
+        // When
+        let result = extract_response_content(content, "nonexistent");
+
+        // Then
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn extract_response_content__should_handle_nested_response_blocks() {
+        // Given — nested response block inside the content
+        let content = "\
+@magent summarize
+
+<magent-response>
+Found this:
+<magent-response>
+inner content
+</magent-response>
+Outer text.
+</magent-response>
+";
+
+        // When
+        let result = extract_response_content(content, "summarize");
+
+        // Then
+        let expected = "\
+Found this:
+<magent-response>
+inner content
+</magent-response>
+Outer text.";
+        assert_eq!(result.unwrap(), expected);
+    }
+
+    #[test]
+    fn extract_response_content__should_return_empty_string_for_empty_response() {
+        // Given
+        let content = "\
+@magent hello
+
+<magent-response status=\"in-progress\">
+</magent-response>
+";
+
+        // When
+        let result = extract_response_content(content, "hello");
+
+        // Then
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[test]
+    fn extract_response_content__should_find_correct_directive_among_multiple() {
+        // Given
+        let content = "\
+@magent first
+
+<magent-response>
+First answer.
+</magent-response>
+
+@magent second
+
+<magent-response status=\"in-progress\">
+Working on second.
+</magent-response>
+";
+
+        // When
+        let result = extract_response_content(content, "second");
+
+        // Then
+        assert_eq!(result.unwrap(), "Working on second.");
     }
 }
