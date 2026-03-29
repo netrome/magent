@@ -43,6 +43,10 @@
 ### Parser robustness
 - [x] Skip `@magent` directives inside `<magent-response>` blocks
 
+### Browser tool (project 007)
+- [x] PR 1-3: Runtime detection, browser tool implementation, wiring + turn limit
+- [ ] PR 4: End-to-end testing with realistic accessibility tree fixtures
+
 ## Post-MVP
 
 - [ ] Config file (`.magent/config.toml`)

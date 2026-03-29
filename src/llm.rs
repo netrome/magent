@@ -85,6 +85,7 @@ Read the full content of a file in the knowledge base.
 Input: a relative file path, optionally followed by a line range (e.g. notes/rust.md 40-60)
 Returns: the file content with line numbers.
 
+{browser_tool}\
 === END TOOLS ===";
 
 /// A chat message with role and content.
@@ -223,8 +224,41 @@ impl LlmClient for ChatClient {
     }
 }
 
-pub fn build_system_prompt(document: &str) -> String {
-    SYSTEM_PROMPT_TEMPLATE.replace("{document}", document)
+const BROWSER_TOOL_DOCS: &str = "\
+## browser
+Interact with web pages using a headless browser.
+Input: a browser command. One command per call.
+
+Key commands:
+- open <url> — navigate to a URL (starts browser if needed)
+- snapshot — get page content as an accessibility tree with element refs (@e1, @e2, ...)
+- click <ref> — click an element (e.g. click @e3)
+- type <ref> <text> — type text into an element
+- fill <ref> <text> — clear and fill an input field
+- select <ref> <value> — select a dropdown option
+- press <key> — press a key (Enter, Tab, Escape, etc.)
+- scroll <direction> — scroll the page (up, down, left, right)
+- wait <ref> — wait for an element to appear
+- get text <ref> — get text content of an element
+- get title — get page title
+- get url — get current URL
+- back — go back
+- close — close browser
+
+Typical workflow: open URL → snapshot → read/interact → snapshot again → respond.
+After open, always snapshot first to see the page content before interacting.
+
+";
+
+pub fn build_system_prompt(document: &str, browser_available: bool) -> String {
+    let browser_section = if browser_available {
+        BROWSER_TOOL_DOCS
+    } else {
+        ""
+    };
+    SYSTEM_PROMPT_TEMPLATE
+        .replace("{document}", document)
+        .replace("{browser_tool}", browser_section)
 }
 
 // -- Request/response types for OpenAI-compatible API --
@@ -501,7 +535,7 @@ mod tests {
 
         let client = test_client(&server.uri(), None);
         let messages = vec![
-            Message::system(build_system_prompt("# My Document\n\nSome content.")),
+            Message::system(build_system_prompt("# My Document\n\nSome content.", false)),
             Message::user("summarize this"),
         ];
 
@@ -612,7 +646,10 @@ mod tests {
 
         let client = test_client(&server.uri(), None);
         let messages = vec![
-            Message::system(build_system_prompt("# Shopping List\n\n- milk\n- eggs\n")),
+            Message::system(build_system_prompt(
+                "# Shopping List\n\n- milk\n- eggs\n",
+                false,
+            )),
             Message::user("edit this"),
         ];
 
@@ -638,7 +675,7 @@ mod tests {
     #[test]
     fn build_system_prompt__should_insert_document_content() {
         // When
-        let result = build_system_prompt("# Hello\n\nWorld.");
+        let result = build_system_prompt("# Hello\n\nWorld.", false);
 
         // Then
         assert!(result.contains("# Hello\n\nWorld."));
@@ -649,12 +686,41 @@ mod tests {
     #[test]
     fn build_system_prompt__should_include_thinking_instruction() {
         // When
-        let result = build_system_prompt("doc");
+        let result = build_system_prompt("doc", false);
 
         // Then
         assert!(
             result.contains("<magent-thinking>"),
             "system prompt should instruct the model to use thinking tags"
+        );
+    }
+
+    #[test]
+    fn build_system_prompt__should_include_browser_tool_when_available() {
+        // When
+        let result = build_system_prompt("doc", true);
+
+        // Then
+        assert!(
+            result.contains("## browser"),
+            "should include browser tool section"
+        );
+        assert!(
+            result.contains("snapshot"),
+            "should include snapshot command"
+        );
+        assert!(result.contains("open <url>"), "should include open command");
+    }
+
+    #[test]
+    fn build_system_prompt__should_exclude_browser_tool_when_unavailable() {
+        // When
+        let result = build_system_prompt("doc", false);
+
+        // Then
+        assert!(
+            !result.contains("## browser"),
+            "should not include browser tool section"
         );
     }
 

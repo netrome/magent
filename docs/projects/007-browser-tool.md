@@ -1,6 +1,6 @@
 # Browser Tool (agent-browser integration)
 
-**Status:** Draft
+**Status:** In Progress
 
 ## Goal
 

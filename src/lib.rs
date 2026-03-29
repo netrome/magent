@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
 
 use llm::LlmClient;
+use tools::browser::BrowserExecutor;
 
 #[derive(Parser)]
 #[command(name = "magent", about = "A markdown-native AI agent daemon")]
@@ -55,19 +56,35 @@ pub async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let api_key = std::env::var("MAGENT_API_KEY").ok();
             let client = llm::ChatClient::new(api_url, model, api_key);
 
+            let browser = if tools::browser::is_available() {
+                println!("Browser tool available (agent-browser detected).");
+                Some(tools::browser::AgentBrowser)
+            } else {
+                None
+            };
+
             let (tx, rx) = mpsc::channel(100);
             let _watcher = watcher::start(&directory, tx)?;
 
             println!("Watching {}...", directory.display());
 
-            process_events(rx, &client, &directory).await;
+            process_events(rx, &client, &directory, &browser).await;
+
+            if browser.is_some() {
+                tools::browser::close_session();
+            }
 
             Ok(())
         }
     }
 }
 
-async fn process_events(mut rx: mpsc::Receiver<PathBuf>, client: &impl LlmClient, root: &Path) {
+async fn process_events<B: BrowserExecutor>(
+    mut rx: mpsc::Receiver<PathBuf>,
+    client: &impl LlmClient,
+    root: &Path,
+    browser: &Option<B>,
+) {
     loop {
         let path = tokio::select! {
             Some(path) = rx.recv() => path,
@@ -78,7 +95,7 @@ async fn process_events(mut rx: mpsc::Receiver<PathBuf>, client: &impl LlmClient
         };
 
         tokio::select! {
-            _ = process_file(&path, client, root) => {}
+            _ = process_file(&path, client, root, browser) => {}
             _ = tokio::signal::ctrl_c() => {
                 println!("\nShutting down.");
                 break;
@@ -87,10 +104,15 @@ async fn process_events(mut rx: mpsc::Receiver<PathBuf>, client: &impl LlmClient
     }
 }
 
-const MAX_TOOL_CALLS: usize = 5;
+const MAX_TOOL_CALLS: usize = 10;
 const TOOL_CALL_STOP: &str = "</magent-tool-call>";
 
-async fn process_file(path: &Path, client: &impl LlmClient, root: &Path) {
+async fn process_file<B: BrowserExecutor>(
+    path: &Path,
+    client: &impl LlmClient,
+    root: &Path,
+    browser: &Option<B>,
+) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -132,7 +154,8 @@ async fn process_file(path: &Path, client: &impl LlmClient, root: &Path) {
             .unwrap_or_default();
         let document = context::build_context_string(&content, &filename, &context_files);
 
-        let full_response = process_directive(client, &directive.prompt, &document, root).await;
+        let full_response =
+            process_directive(client, &directive.prompt, &document, root, browser).await;
         let response = format_response(&full_response);
 
         if let Err(e) = writer::write_response(path, &directive.prompt, &response) {
@@ -144,17 +167,18 @@ async fn process_file(path: &Path, client: &impl LlmClient, root: &Path) {
 /// Run the tool-use loop for a single directive.
 ///
 /// Sends the prompt to the LLM with the document as context. If the LLM
-/// calls tools (search, read), executes them and feeds results back for
-/// up to `MAX_TOOL_CALLS` rounds. Returns the full response including
+/// calls tools (search, read, browser), executes them and feeds results back
+/// for up to `MAX_TOOL_CALLS` rounds. Returns the full response including
 /// tool call/result history.
-async fn process_directive(
+async fn process_directive<B: BrowserExecutor>(
     client: &impl LlmClient,
     prompt: &str,
     document: &str,
     root: &Path,
+    browser: &Option<B>,
 ) -> String {
     let mut messages = vec![
-        llm::Message::system(llm::build_system_prompt(document)),
+        llm::Message::system(llm::build_system_prompt(document, browser.is_some())),
         llm::Message::user(prompt),
     ];
     let mut full_response = String::new();
@@ -184,7 +208,7 @@ async fn process_directive(
 
         // Execute the tool
         tool_call_count += 1;
-        let output = execute_tool(&call, root);
+        let output = execute_tool(&call, root, browser);
         let result = tool::ToolResult {
             tool: call.tool.clone(),
             output,
@@ -216,10 +240,18 @@ fn complete_tool_call_tag(response: &str) -> String {
     }
 }
 
-fn execute_tool(call: &tool::ToolCall, root: &Path) -> String {
+fn execute_tool<B: BrowserExecutor>(
+    call: &tool::ToolCall,
+    root: &Path,
+    browser: &Option<B>,
+) -> String {
     match call.tool.as_str() {
         "search" => tools::search::SearchTool::new(root.to_path_buf()).execute(&call.input),
         "read" => tools::read::ReadTool::new(root.to_path_buf()).execute(&call.input),
+        "browser" => match browser {
+            Some(b) => b.execute(&call.input),
+            None => "Error: browser tool is not available".to_string(),
+        },
         _ => format!("Unknown tool: {}", call.tool),
     }
 }
@@ -337,6 +369,17 @@ mod tests {
         }
     }
 
+    /// Stub browser executor for tests that don't use browser features.
+    struct NoBrowser;
+    impl BrowserExecutor for NoBrowser {
+        fn execute(&self, _input: &str) -> String {
+            unreachable!("browser should not be called in this test")
+        }
+    }
+
+    /// Convenience: no browser available.
+    const NO_BROWSER: Option<NoBrowser> = None;
+
     fn create_file(dir: &std::path::Path, name: &str, content: &str) {
         let path = dir.join(name);
         if let Some(parent) = path.parent() {
@@ -402,7 +445,7 @@ mod tests {
         let client = FakeLlm("Rayleigh scattering.".to_string());
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -420,7 +463,7 @@ mod tests {
         let client = FailingLlm("Connection refused (http://localhost:11434/v1)".to_string());
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -446,7 +489,7 @@ mod tests {
         };
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         assert_eq!(client.call_count.load(Ordering::Relaxed), 0);
@@ -461,7 +504,7 @@ mod tests {
         let client = FakeLlm("Answer.".to_string());
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -481,7 +524,7 @@ mod tests {
         let client = MessageCaptureLlm::new();
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let captured = client.captured_messages.lock().unwrap();
@@ -517,7 +560,7 @@ Fixed the URL:
         let client = FakeLlm(llm_response.to_string());
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -543,7 +586,7 @@ Fixed the URL:
         let client = FakeLlm("Rust is a systems programming language.".to_string());
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -569,7 +612,7 @@ Fixed the URL:
         let client = FakeLlm(llm_response.to_string());
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then — the written response should be parseable by parse_edit_blocks
         let content = std::fs::read_to_string(&path).unwrap();
@@ -614,7 +657,7 @@ Fixed:
         };
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then — edit applied, LLM not called
         let content = std::fs::read_to_string(&path).unwrap();
@@ -657,7 +700,7 @@ Fixed the URL:
         let client = FakeLlm(llm_response.to_string());
 
         // Step 1: Process directive — should propose edits
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("status=\"proposed\""));
         assert!(
@@ -670,7 +713,7 @@ Fixed the URL:
         std::fs::write(&path, &accepted).unwrap();
 
         // Step 3: Process acceptance — should apply edits
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
         let final_content = std::fs::read_to_string(&path).unwrap();
         assert!(
             final_content.contains("- [Rust](https://rust-lang.org)"),
@@ -696,7 +739,7 @@ Fixed the URL:
         let client = MessageCaptureLlm::new();
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let captured = client.captured_messages.lock().unwrap();
@@ -725,7 +768,7 @@ Fixed the URL:
         let client = MessageCaptureLlm::new();
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then — system message should be plain content, no headers
         let captured = client.captured_messages.lock().unwrap();
@@ -747,7 +790,7 @@ Fixed the URL:
         let client = FakeLlm("Should not be called.".to_string());
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -768,7 +811,7 @@ Fixed the URL:
         let client = FakeLlm("Should not be called.".to_string());
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -803,7 +846,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -835,7 +878,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -867,7 +910,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -890,7 +933,7 @@ Fixed the URL:
         let client = MultiTurnLlm::new(vec![always_tool_call; MAX_TOOL_CALLS + 1]);
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -913,7 +956,7 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
@@ -930,7 +973,7 @@ Fixed the URL:
         let client = FakeLlm("Rust is a systems programming language.".to_string());
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then: works exactly as before
         let content = std::fs::read_to_string(&path).unwrap();
@@ -955,12 +998,238 @@ Fixed the URL:
         ]);
 
         // When
-        process_file(&path, &client, dir.path()).await;
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
 
         // Then
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("<magent-tool-result tool=\"search\">"));
         assert!(content.contains("Found it."));
+    }
+
+    // --- Browser tool integration tests ---
+
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    struct FakeBrowser {
+        responses: Mutex<VecDeque<(&'static str, String)>>,
+    }
+
+    impl FakeBrowser {
+        fn new(responses: Vec<(&'static str, &str)>) -> Self {
+            Self {
+                responses: Mutex::new(
+                    responses
+                        .into_iter()
+                        .map(|(cmd, resp)| (cmd, resp.to_string()))
+                        .collect(),
+                ),
+            }
+        }
+    }
+
+    impl BrowserExecutor for FakeBrowser {
+        fn execute(&self, input: &str) -> String {
+            let (expected, response) = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| panic!("unexpected browser call: {input}"));
+            assert!(
+                input.starts_with(expected),
+                "expected command starting with '{expected}', got '{input}'"
+            );
+            response
+        }
+    }
+
+    #[tokio::test]
+    async fn process_file__should_execute_browser_tool() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent check the page at https://example.com\n").unwrap();
+
+        let browser = Some(FakeBrowser::new(vec![
+            (
+                "open https://example.com",
+                "Navigated to https://example.com",
+            ),
+            (
+                "snapshot",
+                "document \"Example\"\n  heading \"Example Domain\"\n  @e1 link \"More information\"",
+            ),
+        ]));
+
+        let client = MultiTurnLlm::new(vec![
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>open https://example.com</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>snapshot</magent-input>\n",
+            "The page is the Example Domain placeholder page with a link to more information.",
+        ]);
+
+        // When
+        process_file(&path, &client, dir.path(), &browser).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("<magent-tool-result tool=\"browser\">"));
+        assert!(content.contains("Navigated to https://example.com"));
+        assert!(content.contains("Example Domain"));
+        assert!(content.contains("Example Domain placeholder page"));
+    }
+
+    #[tokio::test]
+    async fn process_file__should_handle_browser_interaction_flow() {
+        // Given: open → snapshot → click → snapshot → respond
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(
+            &path,
+            "@magent click the login button on https://example.com\n",
+        )
+        .unwrap();
+
+        let browser = Some(FakeBrowser::new(vec![
+            (
+                "open https://example.com",
+                "Navigated to https://example.com",
+            ),
+            ("snapshot", "document \"Example\"\n  @e3 button \"Login\""),
+            ("click @e3", "Clicked @e3"),
+            (
+                "snapshot",
+                "document \"Login\"\n  @e5 input \"Username\"\n  @e6 input \"Password\"",
+            ),
+        ]));
+
+        let client = MultiTurnLlm::new(vec![
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>open https://example.com</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>snapshot</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>click @e3</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>snapshot</magent-input>\n",
+            "I clicked the Login button and the login form is now showing with Username and Password fields.",
+        ]);
+
+        // When
+        process_file(&path, &client, dir.path(), &browser).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("Clicked @e3"));
+        assert!(content.contains("Username"));
+        assert!(content.contains("login form is now showing"));
+        assert_eq!(client.call_count(), 5);
+    }
+
+    #[tokio::test]
+    async fn process_file__should_mix_browser_and_search_tools() {
+        // Given: search knowledge base, then browse a URL
+        let dir = tempfile::tempdir().unwrap();
+        create_file(dir.path(), "links.md", "Project page: https://example.com");
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent find the project URL and check it\n").unwrap();
+
+        let browser = Some(FakeBrowser::new(vec![
+            (
+                "open https://example.com",
+                "Navigated to https://example.com",
+            ),
+            (
+                "snapshot",
+                "document \"Project\"\n  text \"Welcome to the project\"",
+            ),
+        ]));
+
+        let client = MultiTurnLlm::new(vec![
+            "<magent-tool-call tool=\"search\">\n\
+             <magent-input>project URL</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>open https://example.com</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>snapshot</magent-input>\n",
+            "Found the project URL in links.md and confirmed the page says \"Welcome to the project\".",
+        ]);
+
+        // When
+        process_file(&path, &client, dir.path(), &browser).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("<magent-tool-result tool=\"search\">"));
+        assert!(content.contains("<magent-tool-result tool=\"browser\">"));
+        assert!(content.contains("Welcome to the project"));
+    }
+
+    #[tokio::test]
+    async fn process_file__should_return_error_when_browser_unavailable() {
+        // Given: browser is None but LLM tries to use it
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent browse something\n").unwrap();
+
+        let client = MultiTurnLlm::new(vec![
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>open https://example.com</magent-input>\n",
+            "The browser tool is not available.",
+        ]);
+
+        // When
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("Error: browser tool is not available"));
+    }
+
+    #[tokio::test]
+    async fn process_file__should_include_browser_docs_in_system_prompt_when_available() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent hello\n").unwrap();
+
+        let browser = Some(FakeBrowser::new(vec![]));
+        let client = MessageCaptureLlm::new();
+
+        // When
+        process_file(&path, &client, dir.path(), &browser).await;
+
+        // Then
+        let captured = client.captured_messages.lock().unwrap();
+        let messages = captured.as_ref().unwrap();
+        let system_content = &messages[0].content;
+        assert!(
+            system_content.contains("## browser"),
+            "system prompt should include browser tool docs when browser is available"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_file__should_exclude_browser_docs_when_unavailable() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent hello\n").unwrap();
+        let client = MessageCaptureLlm::new();
+
+        // When
+        process_file(&path, &client, dir.path(), &NO_BROWSER).await;
+
+        // Then
+        let captured = client.captured_messages.lock().unwrap();
+        let messages = captured.as_ref().unwrap();
+        let system_content = &messages[0].content;
+        assert!(
+            !system_content.contains("## browser"),
+            "system prompt should not include browser tool docs when browser is unavailable"
+        );
     }
 
     #[test]
