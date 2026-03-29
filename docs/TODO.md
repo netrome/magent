@@ -2,7 +2,7 @@
 
 ### Incremental response writing
 - [x] Message reconstruction from response content
-- [ ] Incremental writing in the tool-use loop
+- [x] Incremental writing in the tool-use loop
 - [ ] Crash recovery
 
 ## Done

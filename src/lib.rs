@@ -133,66 +133,131 @@ async fn process_file<B: RunBrowser>(
 
     let directives = parser::parse_directives(&content);
 
-    for directive in directives
-        .iter()
-        .filter(|d| d.status == parser::DirectiveStatus::Unprocessed)
-    {
-        println!("Processing: @magent {}", directive.prompt);
+    for directive in directives.iter().filter(|d| {
+        matches!(
+            d.status,
+            parser::DirectiveStatus::Unprocessed | parser::DirectiveStatus::InProgress
+        )
+    }) {
+        let document = match directive.status {
+            parser::DirectiveStatus::Unprocessed => {
+                println!("Processing: @magent {}", directive.prompt);
 
-        // Resolve context file references
-        let context_files = match context::resolve_context_files(&directive.options, root, path) {
-            Ok(files) => files,
-            Err(e) => {
-                let error_msg = format!("**Error:** {e}");
-                if let Err(e) = writer::write_response(path, &directive.prompt, &error_msg) {
-                    eprintln!("Failed to write response: {e}");
+                // Resolve context file references
+                let context_files =
+                    match context::resolve_context_files(&directive.options, root, path) {
+                        Ok(files) => files,
+                        Err(e) => {
+                            let error_msg = format!("**Error:** {e}");
+                            if let Err(e) =
+                                writer::write_response(path, &directive.prompt, &error_msg)
+                            {
+                                eprintln!("Failed to write response: {e}");
+                            }
+                            continue;
+                        }
+                    };
+
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let document = context::build_context_string(&content, &filename, &context_files);
+
+                // Open in-progress response block before starting the LLM loop
+                if let Err(e) = writer::write_response_block(path, &directive.prompt, "", true) {
+                    eprintln!("Failed to open response block: {e}");
+                    continue;
                 }
-                continue;
+
+                document
             }
+            parser::DirectiveStatus::InProgress => {
+                println!("Resuming: @magent {}", directive.prompt);
+
+                // Re-read file for up-to-date content
+                let current_content = match std::fs::read_to_string(path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Failed to read {}: {e}", path.display());
+                        return;
+                    }
+                };
+
+                let context_files =
+                    match context::resolve_context_files(&directive.options, root, path) {
+                        Ok(files) => files,
+                        Err(e) => {
+                            let error_msg = format!("**Error:** {e}");
+                            if let Err(e) = writer::write_response_block(
+                                path,
+                                &directive.prompt,
+                                &error_msg,
+                                false,
+                            ) {
+                                eprintln!("Failed to write response: {e}");
+                            }
+                            continue;
+                        }
+                    };
+
+                let filename = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                context::build_context_string(&current_content, &filename, &context_files)
+            }
+            _ => continue,
         };
 
-        let filename = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let document = context::build_context_string(&content, &filename, &context_files);
-
-        let full_response =
-            process_directive(client, &directive.prompt, &document, root, browser).await;
-        let response = format_response(&full_response);
-
-        if let Err(e) = writer::write_response(path, &directive.prompt, &response) {
-            eprintln!("Failed to write response: {e}");
-        }
+        process_directive(client, &directive.prompt, &document, root, browser, path).await;
     }
 }
 
-/// Run the tool-use loop for a single directive.
+/// Run the tool-use loop for a single directive, writing incrementally.
 ///
 /// Sends the prompt to the LLM with the document as context. If the LLM
 /// calls tools (search, read, browser), executes them and feeds results back
-/// for up to `MAX_TOOL_CALLS` rounds. Returns the full response including
-/// tool call/result history.
+/// for up to `MAX_TOOL_CALLS` rounds. Flushes progress to disk after each
+/// LLM output and tool result. Re-reads the file before each LLM call to
+/// detect user intervention (edits, deletion, pause).
 async fn process_directive<B: RunBrowser>(
     client: &impl LlmClient,
     prompt: &str,
     document: &str,
     root: &Path,
     browser: Option<&B>,
-) -> String {
+    path: &Path,
+) {
+    let system_prompt = llm::build_system_prompt(document, browser.is_some());
     let mut messages = vec![
-        llm::Message::system(llm::build_system_prompt(document, browser.is_some())),
+        llm::Message::system(&system_prompt),
         llm::Message::user(prompt),
     ];
     let mut full_response = String::new();
     let mut tool_call_count = 0;
 
-    loop {
+    while let Ok(file_content) = std::fs::read_to_string(path) {
+        // Re-read file to detect user intervention
+        match parser::extract_response_content(&file_content, prompt) {
+            None => break, // User deleted response block
+            Some(file_response) => {
+                if file_response != full_response {
+                    // User modified content — adopt and reconstruct messages
+                    full_response = file_response;
+                    messages = tool::reconstruct_messages(&system_prompt, prompt, &full_response);
+                }
+            }
+        }
+
         let llm_response = match client.complete_messages(&messages, &[TOOL_CALL_STOP]).await {
             Ok(r) => r,
             Err(e) => {
                 full_response.push_str(&format!("**Error:** {e}"));
-                break;
+                if let Err(e) = writer::write_response_block(path, prompt, &full_response, false) {
+                    eprintln!("Failed to write error response: {e}");
+                }
+                return;
             }
         };
 
@@ -202,12 +267,21 @@ async fn process_directive<B: RunBrowser>(
 
         let Some(call) = tool_call else {
             full_response.push_str(&llm_response);
-            break;
+            let formatted = format_response(&full_response);
+            if let Err(e) = writer::write_response_block(path, prompt, &formatted, false) {
+                eprintln!("Failed to write final response: {e}");
+            }
+            return;
         };
 
         // Append the tool call (with closing tag) to the response
         full_response.push_str(&completed);
         full_response.push('\n');
+
+        // Flush after LLM output
+        if let Err(e) = writer::write_response_block(path, prompt, &full_response, true) {
+            eprintln!("Failed to flush response: {e}");
+        }
 
         // Execute the tool
         tool_call_count += 1;
@@ -220,17 +294,23 @@ async fn process_directive<B: RunBrowser>(
         full_response.push_str(&result_text);
         full_response.push('\n');
 
+        // Flush after tool result
+        if let Err(e) = writer::write_response_block(path, prompt, &full_response, true) {
+            eprintln!("Failed to flush response: {e}");
+        }
+
         // Feed result back for the next turn
         messages.push(llm::Message::assistant(&completed));
         messages.push(llm::Message::user(&result_text));
 
         if tool_call_count >= MAX_TOOL_CALLS {
             full_response.push_str("(Tool call limit reached.)");
-            break;
+            if let Err(e) = writer::write_response_block(path, prompt, &full_response, false) {
+                eprintln!("Failed to write response: {e}");
+            }
+            return;
         }
     }
-
-    full_response
 }
 
 /// Append closing tag if the response has an unclosed tool call.
@@ -1620,6 +1700,239 @@ provides ergonomic error propagation.",
         assert!(snapshot_msg.content.contains("link \"alice\" [ref=e14]"));
         assert!(snapshot_msg.content.contains("link \"bob\" [ref=e18]"));
         assert!(snapshot_msg.content.contains("saturating_mul"));
+    }
+
+    // --- Incremental writing tests ---
+
+    #[tokio::test]
+    async fn process_file__should_resume_in_progress_directive() {
+        // Given: a file with an in-progress response containing a completed tool call
+        let dir = tempfile::tempdir().unwrap();
+        create_file(
+            dir.path(),
+            "notes/rust.md",
+            "Rust uses Result for error handling.",
+        );
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent what about error handling?\n").unwrap();
+
+        // Set up in-progress state as the writer would produce it
+        let partial = "\
+<magent-tool-call tool=\"search\">
+<magent-input>error handling</magent-input>
+</magent-tool-call>
+<magent-tool-result tool=\"search\">
+notes/rust.md: Rust uses Result for error handling.
+</magent-tool-result>
+";
+        writer::write_response_block(&path, "what about error handling?", partial, true).unwrap();
+
+        // LLM should produce the final response (no more tool calls)
+        let client = FakeLlm("Based on your notes, Rust uses Result.".to_string());
+
+        // When
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("<magent-response>"),
+            "response should be complete (no status attribute)"
+        );
+        assert!(
+            !content.contains("in-progress"),
+            "in-progress status should be removed"
+        );
+        assert!(
+            content.contains("<magent-tool-call"),
+            "tool call history should be preserved"
+        );
+        assert!(
+            content.contains("<magent-tool-result"),
+            "tool result history should be preserved"
+        );
+        assert!(
+            content.contains("Based on your notes"),
+            "final response should be present"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_file__should_skip_paused_directive() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(
+            &path,
+            "@magent do something\n\n\
+             <magent-response status=\"paused\">\n\
+             partial content\n\
+             </magent-response>\n",
+        )
+        .unwrap();
+        let client = SpyLlm {
+            response: "Should not be called".to_string(),
+            call_count: AtomicUsize::new(0),
+        };
+
+        // When
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
+
+        // Then
+        assert_eq!(
+            client.call_count.load(Ordering::Relaxed),
+            0,
+            "LLM should not be called for paused directives"
+        );
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("status=\"paused\""),
+            "paused status should be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_file__should_reconstruct_messages_when_resuming() {
+        // Given: a file with an in-progress response containing a tool call + result
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent find errors\n").unwrap();
+        let partial = "\
+<magent-tool-call tool=\"search\">
+<magent-input>errors</magent-input>
+</magent-tool-call>
+<magent-tool-result tool=\"search\">
+Found 3 results.
+</magent-tool-result>
+";
+        writer::write_response_block(&path, "find errors", partial, true).unwrap();
+
+        let client = MessageCaptureLlm::new();
+
+        // When
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
+
+        // Then: LLM should receive reconstructed messages
+        let captured = client.captured_messages.lock().unwrap();
+        let messages = captured.as_ref().expect("LLM should have been called");
+        // system + user prompt + assistant (tool call) + user (tool result) = 4 messages
+        assert_eq!(
+            messages.len(),
+            4,
+            "should have 4 messages: system, user, assistant, user"
+        );
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[1].role, "user");
+        assert!(messages[1].content.contains("find errors"));
+        assert_eq!(messages[2].role, "assistant");
+        assert!(messages[2].content.contains("magent-tool-call"));
+        assert_eq!(messages[3].role, "user");
+        assert!(messages[3].content.contains("Found 3 results"));
+    }
+
+    #[tokio::test]
+    async fn process_file__should_write_in_progress_during_tool_calls() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        create_file(dir.path(), "notes.md", "some content");
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent search notes\n").unwrap();
+
+        // LLM that captures file state at each call
+        struct FileInspectingLlm {
+            path: PathBuf,
+            responses: Vec<String>,
+            call_index: AtomicUsize,
+            snapshots: std::sync::Mutex<Vec<String>>,
+        }
+
+        impl LlmClient for FileInspectingLlm {
+            async fn complete_messages(
+                &self,
+                _messages: &[llm::Message],
+                _stop: &[&str],
+            ) -> Result<String, llm::LlmError> {
+                let i = self.call_index.fetch_add(1, Ordering::Relaxed);
+                let content = std::fs::read_to_string(&self.path).unwrap();
+                self.snapshots.lock().unwrap().push(content);
+                Ok(self.responses[i].clone())
+            }
+        }
+
+        let client = FileInspectingLlm {
+            path: path.clone(),
+            responses: vec![
+                "<magent-tool-call tool=\"search\">\n\
+                 <magent-input>content</magent-input>\n"
+                    .to_string(),
+                "Found it.".to_string(),
+            ],
+            call_index: AtomicUsize::new(0),
+            snapshots: std::sync::Mutex::new(Vec::new()),
+        };
+
+        // When
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
+
+        // Then: first snapshot should show in-progress status
+        let snapshots = client.snapshots.lock().unwrap();
+        assert_eq!(snapshots.len(), 2);
+        assert!(
+            snapshots[0].contains("status=\"in-progress\""),
+            "file should have in-progress status before first LLM call"
+        );
+        assert!(
+            snapshots[1].contains("status=\"in-progress\""),
+            "file should have in-progress status before second LLM call"
+        );
+        // Second snapshot should also contain the tool call and result
+        assert!(
+            snapshots[1].contains("<magent-tool-call"),
+            "file should contain tool call history"
+        );
+        assert!(
+            snapshots[1].contains("<magent-tool-result"),
+            "file should contain tool result"
+        );
+
+        // Final file should be complete (no in-progress)
+        let final_content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !final_content.contains("in-progress"),
+            "final response should not have in-progress status"
+        );
+        assert!(final_content.contains("Found it."));
+    }
+
+    #[tokio::test]
+    async fn process_directive__should_stop_when_no_response_block() {
+        // Given: file with directive but no response block (simulates user deletion)
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(&path, "@magent do something\n").unwrap();
+
+        let client = SpyLlm {
+            response: "Should not be called".to_string(),
+            call_count: AtomicUsize::new(0),
+        };
+
+        // When
+        process_directive(
+            &client,
+            "do something",
+            "doc",
+            dir.path(),
+            NO_BROWSER,
+            &path,
+        )
+        .await;
+
+        // Then: LLM should not be called (no response block to continue)
+        assert_eq!(
+            client.call_count.load(Ordering::Relaxed),
+            0,
+            "LLM should not be called when response block is missing"
+        );
     }
 
     #[test]
