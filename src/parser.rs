@@ -138,7 +138,7 @@ fn parse_options(input: &str) -> HashMap<String, String> {
 /// `DirectiveStatus` based on the `status` attribute: `Complete` for bare
 /// `<magent-response>`, `InProgress` for `status="in-progress"`, `Paused`
 /// for `status="paused"`.
-fn parse_response_open_tag(trimmed: &str) -> Option<DirectiveStatus> {
+pub(crate) fn parse_response_open_tag(trimmed: &str) -> Option<DirectiveStatus> {
     if trimmed == "<magent-response>" {
         return Some(DirectiveStatus::Complete);
     }
