@@ -1228,6 +1228,362 @@ Fixed the URL:
         );
     }
 
+    // --- Realistic browser fixture tests ---
+    //
+    // These tests use accessibility tree snapshots that match the actual
+    // agent-browser output format. They serve as both integration tests and
+    // documentation of the expected snapshot structure.
+
+    /// Realistic snapshot of a GitHub pull request page.
+    const GITHUB_PR_SNAPSHOT: &str = "\
+document \"Add retry logic to API client by user · Pull Request #42 · acme/webapp\"
+  banner
+    navigation \"Global\"
+      @e1 link \"Skip to content\"
+      @e2 link \"acme/webapp\"
+  main
+    heading \"Add retry logic to API client #42\"
+    text \"Open — user wants to merge 3 commits into main from retry-logic\"
+    navigation \"Pull request tabs\"
+      @e5 tab \"Conversation\" selected
+      @e6 tab \"Commits 3\"
+      @e7 tab \"Files changed 4\"
+    region \"Timeline\"
+      article \"Review comment by alice\"
+        @e10 link \"alice\"
+        text \"commented 2 days ago\"
+        paragraph \"The backoff multiplier should be configurable rather than hardcoded to 2. Consider adding a parameter to RetryConfig.\"
+      article \"Review comment by bob\"
+        @e14 link \"bob\"
+        text \"commented 1 day ago\"
+        paragraph \"Can we add a test for the timeout case? The current tests only cover success and immediate failure.\"
+      article \"Review comment by alice\"
+        @e18 link \"alice\"
+        text \"commented 3 hours ago\"
+        paragraph \"Also, the jitter calculation on line 47 can overflow for large retry counts. Use saturating_mul instead.\"
+    region \"New comment\"
+      @e22 textbox \"Leave a comment\"
+      @e23 button \"Comment\"";
+
+    /// Realistic snapshot of a search engine results page.
+    const SEARCH_RESULTS_SNAPSHOT: &str = "\
+document \"rust error handling best practices - Search\"
+  main
+    region \"Search results\"
+      article
+        @e3 link \"Error Handling in Rust - A Deep Dive\"
+        text \"blog.rust-lang.org\"
+        paragraph \"A comprehensive guide to using Result, Option, and the ? operator for robust error handling...\"
+      article
+        @e5 link \"Rust By Example: Error handling\"
+        text \"doc.rust-lang.org\"
+        paragraph \"This section covers the various ways to handle errors in Rust, including unwrap, expect, and custom error types...\"
+      article
+        @e7 link \"Best practices for error handling in Rust 2024\"
+        text \"medium.com\"
+        paragraph \"Updated patterns for error handling using thiserror, anyhow, and the new features in Rust 1.75...\"
+    navigation \"Pagination\"
+      @e10 link \"Next\"";
+
+    #[tokio::test]
+    async fn process_file__github_pr_review_flow() {
+        // Full realistic flow: open PR → snapshot → read comments → respond with summary
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(
+            &path,
+            "@magent summarize the review comments on https://github.com/acme/webapp/pull/42\n",
+        )
+        .unwrap();
+
+        let browser = Some(FakeBrowser::new(vec![
+            (
+                "open https://github.com/acme/webapp/pull/42",
+                "Navigated to https://github.com/acme/webapp/pull/42",
+            ),
+            ("snapshot", GITHUB_PR_SNAPSHOT),
+        ]));
+
+        let client = MultiTurnLlm::new(vec![
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>open https://github.com/acme/webapp/pull/42</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>snapshot</magent-input>\n",
+            "There are 3 open review comments on PR #42:\n\n\
+             1. **alice** (2 days ago): The backoff multiplier should be configurable.\n\
+             2. **bob** (1 day ago): Requesting a test for the timeout case.\n\
+             3. **alice** (3 hours ago): Jitter calculation can overflow — use saturating_mul.",
+        ]);
+
+        // When
+        process_file(&path, &client, dir.path(), browser.as_ref()).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Snapshot was passed through to LLM context
+        assert!(content.contains("backoff multiplier should be configurable"));
+        assert!(content.contains("saturating_mul"));
+        // Final response is present
+        assert!(content.contains("3 open review comments"));
+        assert!(content.contains("alice"));
+        assert!(content.contains("bob"));
+        assert_eq!(client.call_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn process_file__search_and_click_flow() {
+        // Realistic flow: open search → snapshot → fill query → press Enter →
+        // snapshot results → click link → snapshot article → respond
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(
+            &path,
+            "@magent search for rust error handling best practices and summarize the top result\n",
+        )
+        .unwrap();
+
+        let article_snapshot = "\
+document \"Error Handling in Rust - A Deep Dive\"
+  main
+    article
+      heading \"Error Handling in Rust\"
+      paragraph \"Rust's approach to error handling is one of its most distinctive features. \
+Unlike exceptions in other languages, Rust uses the type system to encode the possibility of failure.\"
+      heading \"The Result Type\"
+      paragraph \"The Result<T, E> enum is the primary mechanism for recoverable errors. \
+It forces callers to explicitly handle both success and failure cases.\"
+      heading \"The ? Operator\"
+      paragraph \"The question mark operator provides ergonomic error propagation, \
+converting and returning errors automatically.\"";
+
+        let browser = Some(FakeBrowser::new(vec![
+            (
+                "open https://search.example.com",
+                "Navigated to https://search.example.com",
+            ),
+            (
+                "snapshot",
+                "document \"Search\"\n  @e1 input \"Search\" focused\n  @e2 button \"Search\"",
+            ),
+            ("fill @e1 rust error handling best practices", "Filled @e1"),
+            ("press Enter", "Pressed Enter"),
+            ("snapshot", SEARCH_RESULTS_SNAPSHOT),
+            ("click @e3", "Clicked @e3"),
+            ("snapshot", article_snapshot),
+        ]));
+
+        let client = MultiTurnLlm::new(vec![
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>open https://search.example.com</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>snapshot</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>fill @e1 rust error handling best practices</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>press Enter</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>snapshot</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>click @e3</magent-input>\n",
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>snapshot</magent-input>\n",
+            "The top result is \"Error Handling in Rust - A Deep Dive\" from blog.rust-lang.org. \
+Key points: Rust uses the type system (Result<T, E>) rather than exceptions, and the ? operator \
+provides ergonomic error propagation.",
+        ]);
+
+        // When
+        process_file(&path, &client, dir.path(), browser.as_ref()).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        // All tool calls/results are visible in the response
+        assert!(content.contains("<magent-tool-result tool=\"browser\">"));
+        assert!(content.contains("Filled @e1"));
+        assert!(content.contains("Pressed Enter"));
+        // Search results snapshot was passed through
+        assert!(content.contains("Error Handling in Rust - A Deep Dive"));
+        // Article content was passed through
+        assert!(content.contains("Result<T, E>"));
+        assert!(content.contains("question mark operator"));
+        // Final synthesis is present
+        assert!(content.contains("ergonomic error propagation"));
+        // 7 browser calls + 1 final response = 8 LLM turns
+        assert_eq!(client.call_count(), 8);
+    }
+
+    #[tokio::test]
+    async fn process_file__knowledge_base_search_then_browse() {
+        // Realistic mixed-tool flow: search knowledge base for a URL,
+        // then browse it and synthesize information from both sources
+        let dir = tempfile::tempdir().unwrap();
+        create_file(
+            dir.path(),
+            "projects/webapp.md",
+            "# Webapp\n\n\
+             Status: in progress\n\
+             CI dashboard: https://ci.example.com/acme/webapp\n\n\
+             The webapp uses React + TypeScript.\n",
+        );
+        let path = dir.path().join("test.md");
+        std::fs::write(
+            &path,
+            "@magent check the CI status for the webapp project\n",
+        )
+        .unwrap();
+
+        let ci_snapshot = "\
+document \"CI Dashboard — acme/webapp\"
+  main
+    heading \"acme/webapp\"
+    table \"Recent builds\"
+      row
+        cell \"#847\"
+        @e3 cell \"main\"
+        cell \"passed\"
+        cell \"2 min ago\"
+      row
+        cell \"#846\"
+        @e5 cell \"retry-logic\"
+        cell \"failed\"
+        cell \"15 min ago\"
+      row
+        cell \"#845\"
+        @e7 cell \"main\"
+        cell \"passed\"
+        cell \"1 hour ago\"";
+
+        let browser = Some(FakeBrowser::new(vec![
+            (
+                "open https://ci.example.com/acme/webapp",
+                "Navigated to https://ci.example.com/acme/webapp",
+            ),
+            ("snapshot", ci_snapshot),
+        ]));
+
+        let client = MultiTurnLlm::new(vec![
+            // Turn 1: search knowledge base
+            "<magent-tool-call tool=\"search\">\n\
+             <magent-input>CI dashboard webapp</magent-input>\n",
+            // Turn 2: read the file for the URL
+            "<magent-tool-call tool=\"read\">\n\
+             <magent-input>projects/webapp.md</magent-input>\n",
+            // Turn 3: open CI dashboard
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>open https://ci.example.com/acme/webapp</magent-input>\n",
+            // Turn 4: snapshot
+            "<magent-tool-call tool=\"browser\">\n\
+             <magent-input>snapshot</magent-input>\n",
+            // Turn 5: synthesize
+            "The CI dashboard for webapp shows:\n\n\
+             - **#847** (main): passed, 2 min ago\n\
+             - **#846** (retry-logic): **failed**, 15 min ago\n\
+             - **#845** (main): passed, 1 hour ago\n\n\
+             The `retry-logic` branch build is failing.",
+        ]);
+
+        // When
+        process_file(&path, &client, dir.path(), browser.as_ref()).await;
+
+        // Then
+        let content = std::fs::read_to_string(&path).unwrap();
+        // Knowledge base tools were used
+        assert!(content.contains("<magent-tool-result tool=\"search\">"));
+        assert!(content.contains("<magent-tool-result tool=\"read\">"));
+        // Browser tools were used
+        assert!(content.contains("<magent-tool-result tool=\"browser\">"));
+        // CI dashboard data was passed through
+        assert!(content.contains("retry-logic"));
+        assert!(content.contains("failed"));
+        // Final response synthesizes everything
+        assert!(content.contains("retry-logic"));
+        assert!(content.contains("branch build is failing"));
+        assert_eq!(client.call_count(), 5);
+    }
+
+    #[tokio::test]
+    async fn process_file__snapshot_passed_to_llm_context() {
+        // Verify that the full snapshot content is fed back to the LLM
+        // as a user message (tool result), preserving the tree structure
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        std::fs::write(
+            &path,
+            "@magent read https://github.com/acme/webapp/pull/42\n",
+        )
+        .unwrap();
+
+        let browser = Some(FakeBrowser::new(vec![
+            (
+                "open https://github.com",
+                "Navigated to https://github.com/acme/webapp/pull/42",
+            ),
+            ("snapshot", GITHUB_PR_SNAPSHOT),
+        ]));
+
+        // Use MessageCaptureLlm-like approach: capture what the LLM sees after the snapshot
+        let captured_messages: std::sync::Arc<Mutex<Vec<Vec<llm::Message>>>> =
+            std::sync::Arc::new(Mutex::new(Vec::new()));
+
+        struct CapturingMultiTurnLlm {
+            responses: Vec<String>,
+            call_index: AtomicUsize,
+            captured: std::sync::Arc<Mutex<Vec<Vec<llm::Message>>>>,
+        }
+
+        impl LlmClient for CapturingMultiTurnLlm {
+            async fn complete_messages(
+                &self,
+                messages: &[llm::Message],
+                _stop: &[&str],
+            ) -> Result<String, llm::LlmError> {
+                self.captured.lock().unwrap().push(messages.to_vec());
+                let i = self.call_index.fetch_add(1, Ordering::Relaxed);
+                Ok(self.responses[i].clone())
+            }
+        }
+
+        let client = CapturingMultiTurnLlm {
+            responses: vec![
+                "<magent-tool-call tool=\"browser\">\n\
+                 <magent-input>open https://github.com/acme/webapp/pull/42</magent-input>\n"
+                    .to_string(),
+                "<magent-tool-call tool=\"browser\">\n\
+                 <magent-input>snapshot</magent-input>\n"
+                    .to_string(),
+                "Summary of the PR.".to_string(),
+            ],
+            call_index: AtomicUsize::new(0),
+            captured: captured_messages.clone(),
+        };
+
+        // When
+        process_file(&path, &client, dir.path(), browser.as_ref()).await;
+
+        // Then: the third LLM call should have the snapshot in its messages
+        let all_calls = captured_messages.lock().unwrap();
+        assert_eq!(all_calls.len(), 3);
+
+        // The last call's messages should include the snapshot as a tool result
+        let last_call_messages = &all_calls[2];
+        let snapshot_in_context = last_call_messages
+            .iter()
+            .any(|m| m.role == "user" && m.content.contains("backoff multiplier"));
+        assert!(
+            snapshot_in_context,
+            "snapshot content should be passed to the LLM as a user message"
+        );
+
+        // Verify the full tree structure is preserved
+        let snapshot_msg = last_call_messages
+            .iter()
+            .find(|m| m.content.contains("Pull Request #42"))
+            .expect("should find message containing snapshot");
+        assert!(snapshot_msg.content.contains("@e10 link \"alice\""));
+        assert!(snapshot_msg.content.contains("@e14 link \"bob\""));
+        assert!(snapshot_msg.content.contains("saturating_mul"));
+    }
+
     #[test]
     fn complete_tool_call_tag__should_append_tag_when_missing() {
         let response = "<magent-tool-call tool=\"search\">\n\
