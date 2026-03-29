@@ -231,15 +231,15 @@ Input: a browser command. One command per call.
 
 Key commands:
 - open <url> — navigate to a URL (starts browser if needed)
-- snapshot — get page content as an accessibility tree with element refs (@e1, @e2, ...)
-- click <ref> — click an element (e.g. click @e3)
-- type <ref> <text> — type text into an element
-- fill <ref> <text> — clear and fill an input field
-- select <ref> <value> — select a dropdown option
+- snapshot — get page content as an accessibility tree with element refs ([ref=e1], [ref=e2], ...)
+- click @<ref> — click an element (e.g. click @e3)
+- type @<ref> <text> — type text into an element
+- fill @<ref> <text> — clear and fill an input field
+- select @<ref> <value> — select a dropdown option
 - press <key> — press a key (Enter, Tab, Escape, etc.)
 - scroll <direction> — scroll the page (up, down, left, right)
-- wait <ref> — wait for an element to appear
-- get text <ref> — get text content of an element
+- wait @<ref> — wait for an element to appear
+- get text @<ref> — get text content of an element
 - get title — get page title
 - get url — get current URL
 - screenshot <file> — save a screenshot

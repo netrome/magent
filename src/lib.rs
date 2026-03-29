@@ -1054,7 +1054,7 @@ Fixed the URL:
             ),
             (
                 "snapshot",
-                "document \"Example\"\n  heading \"Example Domain\"\n  @e1 link \"More information\"",
+                "- heading \"Example Domain\" [level=1, ref=e1]\n  - StaticText \"Example Domain\"\n- paragraph\n  - StaticText \"This domain is for use in illustrative examples.\"\n- paragraph\n  - link \"More information\" [ref=e2]",
             ),
         ]));
 
@@ -1093,11 +1093,14 @@ Fixed the URL:
                 "open https://example.com",
                 "Navigated to https://example.com",
             ),
-            ("snapshot", "document \"Example\"\n  @e3 button \"Login\""),
+            (
+                "snapshot",
+                "- main\n  - button \"Login\" [ref=e3]\n    - StaticText \"Login\"",
+            ),
             ("click @e3", "Clicked @e3"),
             (
                 "snapshot",
-                "document \"Login\"\n  @e5 input \"Username\"\n  @e6 input \"Password\"",
+                "- main\n  - textbox \"Username\" [ref=e5]\n  - textbox \"Password\" [ref=e6]",
             ),
         ]));
 
@@ -1139,7 +1142,7 @@ Fixed the URL:
             ),
             (
                 "snapshot",
-                "document \"Project\"\n  text \"Welcome to the project\"",
+                "- main\n  - StaticText \"Welcome to the project\"",
             ),
         ]));
 
@@ -1235,55 +1238,70 @@ Fixed the URL:
     // documentation of the expected snapshot structure.
 
     /// Realistic snapshot of a GitHub pull request page.
+    /// Format matches actual agent-browser v0.19 output.
     const GITHUB_PR_SNAPSHOT: &str = "\
-document \"Add retry logic to API client by user · Pull Request #42 · acme/webapp\"
-  banner
-    navigation \"Global\"
-      @e1 link \"Skip to content\"
-      @e2 link \"acme/webapp\"
-  main
-    heading \"Add retry logic to API client #42\"
-    text \"Open — user wants to merge 3 commits into main from retry-logic\"
-    navigation \"Pull request tabs\"
-      @e5 tab \"Conversation\" selected
-      @e6 tab \"Commits 3\"
-      @e7 tab \"Files changed 4\"
-    region \"Timeline\"
-      article \"Review comment by alice\"
-        @e10 link \"alice\"
-        text \"commented 2 days ago\"
-        paragraph \"The backoff multiplier should be configurable rather than hardcoded to 2. Consider adding a parameter to RetryConfig.\"
-      article \"Review comment by bob\"
-        @e14 link \"bob\"
-        text \"commented 1 day ago\"
-        paragraph \"Can we add a test for the timeout case? The current tests only cover success and immediate failure.\"
-      article \"Review comment by alice\"
-        @e18 link \"alice\"
-        text \"commented 3 hours ago\"
-        paragraph \"Also, the jitter calculation on line 47 can overflow for large retry counts. Use saturating_mul instead.\"
-    region \"New comment\"
-      @e22 textbox \"Leave a comment\"
-      @e23 button \"Comment\"";
+- generic
+  - link \"Skip to content\" [ref=e1]
+    - StaticText \"Skip to content\"
+  - banner
+    - navigation \"Global\"
+      - link \"acme/webapp\" [ref=e3]
+        - StaticText \"acme/webapp\"
+- main
+  - heading \"Add retry logic to API client #42\" [level=1, ref=e5]
+    - StaticText \"Add retry logic to API client #42\"
+  - StaticText \"Open — user wants to merge 3 commits into main from retry-logic\"
+  - navigation \"Pull request tabs\"
+    - tab \"Conversation\" [selected=true, ref=e8]
+    - tab \"Commits 3\" [ref=e9]
+    - tab \"Files changed 4\" [ref=e10]
+  - generic
+    - article
+      - link \"alice\" [ref=e14]
+        - StaticText \"alice\"
+      - StaticText \"commented 2 days ago\"
+      - paragraph
+        - StaticText \"The backoff multiplier should be configurable rather than hardcoded to 2. Consider adding a parameter to RetryConfig.\"
+    - article
+      - link \"bob\" [ref=e18]
+        - StaticText \"bob\"
+      - StaticText \"commented 1 day ago\"
+      - paragraph
+        - StaticText \"Can we add a test for the timeout case? The current tests only cover success and immediate failure.\"
+    - article
+      - link \"alice\" [ref=e22]
+        - StaticText \"alice\"
+      - StaticText \"commented 3 hours ago\"
+      - paragraph
+        - StaticText \"Also, the jitter calculation on line 47 can overflow for large retry counts. Use saturating_mul instead.\"
+  - generic
+    - textbox \"Leave a comment\" [ref=e26]
+    - button \"Comment\" [ref=e27]";
 
     /// Realistic snapshot of a search engine results page.
     const SEARCH_RESULTS_SNAPSHOT: &str = "\
-document \"rust error handling best practices - Search\"
-  main
-    region \"Search results\"
-      article
-        @e3 link \"Error Handling in Rust - A Deep Dive\"
-        text \"blog.rust-lang.org\"
-        paragraph \"A comprehensive guide to using Result, Option, and the ? operator for robust error handling...\"
-      article
-        @e5 link \"Rust By Example: Error handling\"
-        text \"doc.rust-lang.org\"
-        paragraph \"This section covers the various ways to handle errors in Rust, including unwrap, expect, and custom error types...\"
-      article
-        @e7 link \"Best practices for error handling in Rust 2024\"
-        text \"medium.com\"
-        paragraph \"Updated patterns for error handling using thiserror, anyhow, and the new features in Rust 1.75...\"
-    navigation \"Pagination\"
-      @e10 link \"Next\"";
+- main
+  - generic
+    - article
+      - link \"Error Handling in Rust - A Deep Dive\" [ref=e3]
+        - StaticText \"Error Handling in Rust - A Deep Dive\"
+      - StaticText \"blog.rust-lang.org\"
+      - paragraph
+        - StaticText \"A comprehensive guide to using Result, Option, and the ? operator for robust error handling...\"
+    - article
+      - link \"Rust By Example: Error handling\" [ref=e5]
+        - StaticText \"Rust By Example: Error handling\"
+      - StaticText \"doc.rust-lang.org\"
+      - paragraph
+        - StaticText \"This section covers the various ways to handle errors in Rust, including unwrap, expect, and custom error types...\"
+    - article
+      - link \"Best practices for error handling in Rust 2024\" [ref=e7]
+        - StaticText \"Best practices for error handling in Rust 2024\"
+      - StaticText \"medium.com\"
+      - paragraph
+        - StaticText \"Updated patterns for error handling using thiserror, anyhow, and the new features in Rust 1.75...\"
+  - navigation \"Pagination\"
+    - link \"Next\" [ref=e10]";
 
     #[tokio::test]
     async fn process_file__github_pr_review_flow() {
@@ -1343,17 +1361,22 @@ document \"rust error handling best practices - Search\"
         .unwrap();
 
         let article_snapshot = "\
-document \"Error Handling in Rust - A Deep Dive\"
-  main
-    article
-      heading \"Error Handling in Rust\"
-      paragraph \"Rust's approach to error handling is one of its most distinctive features. \
+- main
+  - article
+    - heading \"Error Handling in Rust\" [level=1, ref=e1]
+      - StaticText \"Error Handling in Rust\"
+    - paragraph
+      - StaticText \"Rust's approach to error handling is one of its most distinctive features. \
 Unlike exceptions in other languages, Rust uses the type system to encode the possibility of failure.\"
-      heading \"The Result Type\"
-      paragraph \"The Result<T, E> enum is the primary mechanism for recoverable errors. \
+    - heading \"The Result Type\" [level=2, ref=e2]
+      - StaticText \"The Result Type\"
+    - paragraph
+      - StaticText \"The Result<T, E> enum is the primary mechanism for recoverable errors. \
 It forces callers to explicitly handle both success and failure cases.\"
-      heading \"The ? Operator\"
-      paragraph \"The question mark operator provides ergonomic error propagation, \
+    - heading \"The ? Operator\" [level=2, ref=e3]
+      - StaticText \"The ? Operator\"
+    - paragraph
+      - StaticText \"The question mark operator provides ergonomic error propagation, \
 converting and returning errors automatically.\"";
 
         let browser = Some(FakeBrowser::new(vec![
@@ -1363,7 +1386,7 @@ converting and returning errors automatically.\"";
             ),
             (
                 "snapshot",
-                "document \"Search\"\n  @e1 input \"Search\" focused\n  @e2 button \"Search\"",
+                "- main\n  - textbox \"Search\" [focused, ref=e1]\n  - button \"Search\" [ref=e2]",
             ),
             ("fill @e1 rust error handling best practices", "Filled @e1"),
             ("press Enter", "Pressed Enter"),
@@ -1433,25 +1456,37 @@ provides ergonomic error propagation.",
         .unwrap();
 
         let ci_snapshot = "\
-document \"CI Dashboard — acme/webapp\"
-  main
-    heading \"acme/webapp\"
-    table \"Recent builds\"
-      row
-        cell \"#847\"
-        @e3 cell \"main\"
-        cell \"passed\"
-        cell \"2 min ago\"
-      row
-        cell \"#846\"
-        @e5 cell \"retry-logic\"
-        cell \"failed\"
-        cell \"15 min ago\"
-      row
-        cell \"#845\"
-        @e7 cell \"main\"
-        cell \"passed\"
-        cell \"1 hour ago\"";
+- main
+  - heading \"acme/webapp\" [level=1, ref=e1]
+    - StaticText \"acme/webapp\"
+  - table \"Recent builds\"
+    - row
+      - cell
+        - StaticText \"#847\"
+      - cell [ref=e3]
+        - StaticText \"main\"
+      - cell
+        - StaticText \"passed\"
+      - cell
+        - StaticText \"2 min ago\"
+    - row
+      - cell
+        - StaticText \"#846\"
+      - cell [ref=e5]
+        - StaticText \"retry-logic\"
+      - cell
+        - StaticText \"failed\"
+      - cell
+        - StaticText \"15 min ago\"
+    - row
+      - cell
+        - StaticText \"#845\"
+      - cell [ref=e7]
+        - StaticText \"main\"
+      - cell
+        - StaticText \"passed\"
+      - cell
+        - StaticText \"1 hour ago\"";
 
         let browser = Some(FakeBrowser::new(vec![
             (
@@ -1577,10 +1612,10 @@ document \"CI Dashboard — acme/webapp\"
         // Verify the full tree structure is preserved
         let snapshot_msg = last_call_messages
             .iter()
-            .find(|m| m.content.contains("Pull Request #42"))
+            .find(|m| m.content.contains("Add retry logic to API client #42"))
             .expect("should find message containing snapshot");
-        assert!(snapshot_msg.content.contains("@e10 link \"alice\""));
-        assert!(snapshot_msg.content.contains("@e14 link \"bob\""));
+        assert!(snapshot_msg.content.contains("link \"alice\" [ref=e14]"));
+        assert!(snapshot_msg.content.contains("link \"bob\" [ref=e18]"));
         assert!(snapshot_msg.content.contains("saturating_mul"));
     }
 
