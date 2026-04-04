@@ -42,26 +42,10 @@ impl ReadTool {
 
     fn resolve_path(&self, path_str: &str) -> Result<PathBuf, String> {
         let file_path = self.root.join(path_str);
-
         if !file_path.exists() {
             return Err(format!("Error: file '{path_str}' not found"));
         }
-
-        let canonical = file_path
-            .canonicalize()
-            .map_err(|_| format!("Error: cannot resolve path '{path_str}'"))?;
-        let root_canonical = self
-            .root
-            .canonicalize()
-            .map_err(|_| "Error: cannot resolve knowledge base root".to_string())?;
-
-        if !canonical.starts_with(&root_canonical) {
-            return Err(format!(
-                "Error: path '{path_str}' is outside the knowledge base"
-            ));
-        }
-
-        Ok(file_path)
+        super::path::resolve_path(&self.root, path_str)
     }
 }
 

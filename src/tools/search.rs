@@ -55,19 +55,7 @@ impl SearchTool {
             return Err(format!("Error: path '{p}' not found"));
         }
 
-        let canonical = dir
-            .canonicalize()
-            .map_err(|_| format!("Error: cannot resolve path '{p}'"))?;
-        let root_canonical = self
-            .root
-            .canonicalize()
-            .map_err(|_| "Error: cannot resolve knowledge base root".to_string())?;
-
-        if !canonical.starts_with(&root_canonical) {
-            return Err(format!("Error: path '{p}' is outside the knowledge base"));
-        }
-
-        Ok(dir)
+        super::path::resolve_path(&self.root, p)
     }
 }
 
