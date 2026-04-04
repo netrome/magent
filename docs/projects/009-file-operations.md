@@ -65,13 +65,18 @@ Add `write`, `move`, and `delete` as tools alongside `search` and `read`. They e
 
 The tool approach is simpler, more composable, and consistent with how magent already handles search, read, and browser. The accept step made sense when edits were the only write mechanism and there was no undo story — but with git as the assumed safety net, immediate execution is the better trade-off.
 
-## What about existing `<magent-edit>` blocks?
+## Removing `<magent-edit>` blocks
 
-The existing edit mechanism (propose/accept for the current document) should also drop the accept step, for consistency. When the LLM returns `<magent-edit>` blocks, magent should apply them immediately instead of writing them as `status="proposed"`.
+The existing `<magent-edit>` mechanism (propose/accept for the current document) should be removed entirely in favor of the `edit` tool.
 
-This simplifies the edit lifecycle from 4 states (`proposed` -> `accepted` -> `applied` / `failed`) to 2 states (`applied` / `failed`). The response block still shows exactly what was changed, so auditability is preserved.
+**Why not keep both?**
+- Having two ways to edit files — `<magent-edit>` for the current document and the `edit` tool for other files — is confusing for both the LLM and humans reading the output.
+- It's the same operation with different syntax and different lifecycles. One mechanism is simpler.
+- The `edit` tool is strictly more capable: it works on any file, including the current one.
+- Removing `<magent-edit>` eliminates a significant chunk of code: the edit parser, `format_proposed_edits`, `process_accepted_edits`, and the entire propose/accept lifecycle.
+- It reinforces a clean separation: tools perform side effects, response prose explains what happened.
 
-This change is independent of the new tools and can be done as a separate PR (or even a separate project). But it's worth noting here because the two changes share the same reasoning: git is the safety net, not an in-file accept step.
+The LLM can edit the current document by using the `edit` tool with the current file's path. The tool result in the response block still shows exactly what changed, preserving auditability.
 
 ## Tool designs
 
@@ -152,9 +157,9 @@ This logic should be extracted into a shared utility since it's now used by 6 to
 
 ## System prompt changes
 
-Add documentation for the four new tools in the `=== TOOLS ===` section of the system prompt, following the same format as search/read/browser.
-
-The edit instructions in the system prompt should be updated: the `<magent-edit>` format remains available for edits to the current document (it's still the most natural way for the LLM to express "change this text right here"), but the `edit` tool is available for modifying other files.
+- Add documentation for the four new tools in the `=== TOOLS ===` section, following the same format as search/read/browser.
+- Remove the `<magent-edit>` format instructions and examples from the system prompt.
+- The system prompt should make clear that the `edit` tool is how the LLM modifies any file, including the current document.
 
 ## What this looks like in practice
 
@@ -281,6 +286,8 @@ Extract the path resolution and boundary-checking logic that's duplicated in `se
 
 ### PR 3: `edit` tool
 
+This is the sole edit mechanism, replacing `<magent-edit>` blocks for all files including the current document.
+
 **Changes:**
 - New `tools/edit.rs` with `EditTool` struct and `.execute()` method.
 - Parse conflict-marker-style search/replace blocks.
@@ -324,21 +331,20 @@ Extract the path resolution and boundary-checking logic that's duplicated in `se
 - Rejects paths outside knowledge base root.
 - Unit tests.
 
-### PR 6: Drop accept step for `<magent-edit>` blocks
+### PR 6: Remove `<magent-edit>` mechanism
 
 **Changes:**
-- In `format_response()`: apply edits immediately to the document instead of writing `status="proposed"`.
-- Remove `process_accepted_edits()` call from `process_file()`.
-- Update edit statuses to just `applied`/`failed`.
-- Update system prompt (remove accept-step language if any).
-- Clean up now-dead code (proposed/accepted status handling).
+- Remove `edit.rs` (the edit parser, `format_proposed_edits`, `process_accepted_edits`, edit status types).
+- Remove `<magent-edit>` format instructions from the system prompt in `llm.rs`.
+- Remove `process_accepted_edits()` call from `process_file()` in `lib.rs`.
+- Remove `format_response()` helper (no longer needed — LLM responses are written as-is).
+- Remove or update all tests related to `<magent-edit>` blocks.
 
 **Acceptance criteria:**
-- `<magent-edit>` blocks are applied immediately when the LLM returns them.
-- Response block shows `status="applied"` or `status="failed"`.
-- No `status="proposed"` or `status="accepted"` in the codebase.
-- All existing edit tests updated.
-- Integration test: directive that edits the document applies changes immediately.
+- No `<magent-edit>`, `<magent-search>`, `<magent-replace>` references in the codebase.
+- `edit.rs` module removed.
+- The `edit` tool (from PR 3) is the only way to modify files.
+- All remaining tests pass.
 
 ### PR 7: End-to-end integration test
 
