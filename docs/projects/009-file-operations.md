@@ -1,6 +1,6 @@
 # File Operations
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Goal
 
@@ -160,6 +160,15 @@ This logic should be extracted into a shared utility since it's now used by 6 to
 - Add documentation for the four new tools in the `=== TOOLS ===` section, following the same format as search/read/browser.
 - Remove the `<magent-edit>` format instructions and examples from the system prompt.
 - The system prompt should make clear that the `edit` tool is how the LLM modifies any file, including the current document.
+- **Include the current file's path** in the document section header: `=== DOCUMENT (notes/meeting.md) ===`. Without this, the LLM has no way to target the current file with the `edit` tool.
+
+## Watcher re-triggering
+
+When write/edit/move/delete tools modify other files in the knowledge base, the file watcher will detect those changes. Since events queue during `process_directive` (single-threaded async), they're processed after the current directive finishes. If a modified file contains `@magent` directives, they get processed — magent prompting itself.
+
+This is a feature: the agent can scaffold a new file with a directive and it will be picked up automatically. No special handling needed.
+
+The theoretical risk is runaway chains (directive A creates file B with a directive that creates file C...), but each step requires a full LLM call, making it slow and expensive enough for the user to notice and intervene (stop daemon, delete files, etc.).
 
 ## What this looks like in practice
 
@@ -259,7 +268,7 @@ Renamed the file.
 
 ### PR 1: Shared path validation utility
 
-Extract the path resolution and boundary-checking logic that's duplicated in `search.rs` and `read.rs` into a shared function in `tools/mod.rs` (or a `tools/path.rs` module).
+Extract the path resolution and boundary-checking logic that's duplicated in `search.rs` and `read.rs` into a shared function in `tools.rs` (or a `tools/path.rs` module).
 
 **Acceptance criteria:**
 - Shared `resolve_path(root: &Path, relative: &str) -> Result<PathBuf, String>` function.

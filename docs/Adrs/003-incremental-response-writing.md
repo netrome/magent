@@ -92,8 +92,6 @@ The daemon's own writes trigger watcher events. These events queue up during `pr
 - **More disk I/O**: writes on every tool iteration instead of once. Negligible for markdown files.
 - **Parser complexity**: the parser needs to understand `status="in-progress"` and the writer needs to support partial response blocks. Message reconstruction from response content is new logic.
 - **Write conflicts**: if the user saves the file at the exact moment the daemon is writing, one write could overwrite the other. Atomic writes (write temp file + rename) reduce the window but don't eliminate it. This is an acceptable risk for a local, single-user tool.
-- **Edit formatting**: during in-progress responses, edit blocks appear as raw LLM output. The `format_response` step (converting edits to `status="proposed"`) only runs on the final close. This is intentional — the user sees the live stream, not the polished output.
-
 ### Scope
 
-This changes `process_directive`, the writer, and the parser. It does not change the tool interface, the LLM client, or the edit acceptance flow. The watcher and `process_events` loop are unchanged.
+This changes `process_directive`, the writer, and the parser. It does not change the tool interface, the LLM client, or the watcher/`process_events` loop.
