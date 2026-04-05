@@ -4,7 +4,7 @@
 - [x] Shared path validation utility
 - [x] Write tool
 - [x] Edit tool
-- [ ] Move tool
+- [x] Move tool
 - [ ] Delete tool
 - [ ] Remove legacy edit
 - [ ] End to end integration test

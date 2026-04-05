@@ -107,6 +107,12 @@ Input format:
 First line is the relative path. Then one or more search/replace blocks.
 Each block replaces the first occurrence only. Use read first to see exact file content.
 
+## move
+Move or rename a file in the knowledge base.
+Input: old/path.md -> new/path.md
+Creates intermediate directories for the destination as needed.
+Fails if source doesn't exist or destination already exists.
+
 {browser_tool}\
 === END TOOLS ===";
 
