@@ -1930,4 +1930,82 @@ Found 3 results.
         assert!(names.contains(&"a.md"));
         assert!(names.contains(&"b.md"));
     }
+
+    // --- File operations integration test ---
+
+    #[tokio::test]
+    async fn process_file__should_execute_write_read_edit_move_delete_sequence() {
+        // Given: a knowledge base with a stale file and a directive requesting
+        // a multi-step file operation workflow
+        let dir = tempfile::tempdir().unwrap();
+        create_file(dir.path(), "stale.md", "old content to remove");
+        let path = dir.path().join("test.md");
+        std::fs::write(
+            &path,
+            "@magent create a guide, fix a typo in it, move it to guides/, and delete stale.md\n",
+        )
+        .unwrap();
+
+        let client = MultiTurnLlm::new(vec![
+            // Turn 1: write a new file
+            "<magent-tool-call tool=\"write\">\n\
+             <magent-input>draft.md\n---\n# Getting Started\n\nWelcoem to the guide.\n</magent-input>\n",
+            // Turn 2: read it back
+            "<magent-tool-call tool=\"read\">\n\
+             <magent-input>draft.md</magent-input>\n",
+            // Turn 3: edit the typo
+            "<magent-tool-call tool=\"edit\">\n\
+             <magent-input>draft.md\n<<<<<<< SEARCH\nWelcoem to the guide.\n=======\nWelcome to the guide.\n>>>>>>> REPLACE</magent-input>\n",
+            // Turn 4: move to guides/
+            "<magent-tool-call tool=\"move\">\n\
+             <magent-input>draft.md -> guides/getting-started.md</magent-input>\n",
+            // Turn 5: delete stale file
+            "<magent-tool-call tool=\"delete\">\n\
+             <magent-input>stale.md</magent-input>\n",
+            // Turn 6: final response
+            "Done! Created the guide, fixed the typo, moved it to guides/, and cleaned up stale.md.",
+        ]);
+
+        // When
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
+
+        // Then: filesystem reflects the full workflow
+        assert!(
+            !dir.path().join("draft.md").exists(),
+            "draft.md should have been moved"
+        );
+        let guide = std::fs::read_to_string(dir.path().join("guides/getting-started.md")).unwrap();
+        assert_eq!(guide, "# Getting Started\n\nWelcome to the guide.");
+        assert!(
+            !dir.path().join("stale.md").exists(),
+            "stale.md should have been deleted"
+        );
+
+        // Then: response block contains all tool calls and results
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        assert!(content.contains("<magent-tool-call tool=\"write\">"));
+        assert!(content.contains("<magent-tool-result tool=\"write\">"));
+        assert!(content.contains("Created draft.md"));
+
+        assert!(content.contains("<magent-tool-call tool=\"read\">"));
+        assert!(content.contains("<magent-tool-result tool=\"read\">"));
+        assert!(content.contains("Welcoem to the guide"));
+
+        assert!(content.contains("<magent-tool-call tool=\"edit\">"));
+        assert!(content.contains("<magent-tool-result tool=\"edit\">"));
+        assert!(content.contains("Applied 1/1 edits to draft.md"));
+
+        assert!(content.contains("<magent-tool-call tool=\"move\">"));
+        assert!(content.contains("<magent-tool-result tool=\"move\">"));
+        assert!(content.contains("Moved draft.md -> guides/getting-started.md"));
+
+        assert!(content.contains("<magent-tool-call tool=\"delete\">"));
+        assert!(content.contains("<magent-tool-result tool=\"delete\">"));
+        assert!(content.contains("Deleted stale.md"));
+
+        assert!(content.contains("Done!"));
+        assert!(content.contains("</magent-response>"));
+        assert_eq!(client.call_count(), 6);
+    }
 }
