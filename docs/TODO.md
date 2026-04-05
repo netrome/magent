@@ -5,7 +5,7 @@
 - [x] Write tool
 - [x] Edit tool
 - [x] Move tool
-- [ ] Delete tool
+- [x] Delete tool
 - [ ] Remove legacy edit
 - [ ] End to end integration test
 

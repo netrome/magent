@@ -113,6 +113,11 @@ Input: old/path.md -> new/path.md
 Creates intermediate directories for the destination as needed.
 Fails if source doesn't exist or destination already exists.
 
+## delete
+Delete a file from the knowledge base.
+Input: path/to/file.md
+Only deletes files, not directories.
+
 {browser_tool}\
 === END TOOLS ===";
 

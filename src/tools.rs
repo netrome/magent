@@ -1,4 +1,5 @@
 pub mod browser;
+pub mod delete;
 pub mod edit;
 pub mod mv;
 pub mod path;
