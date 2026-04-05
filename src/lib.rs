@@ -325,7 +325,7 @@ async fn process_directive<B: RunBrowser>(
         // Execute the tool
         tool_call_count += 1;
         info!(tool = %call.tool, round = tool_call_count, "Executing tool");
-        let output = execute_tool(&call, root, browser);
+        let output = execute_tool(&call, root, browser, path);
         debug!(tool = %call.tool, output_len = output.len(), "Tool execution complete");
         let result = tool::ToolResult {
             tool: call.tool.clone(),
@@ -365,9 +365,16 @@ fn complete_tool_call_tag(response: &str) -> String {
     }
 }
 
-fn execute_tool<B: RunBrowser>(call: &tool::ToolCall, root: &Path, browser: Option<&B>) -> String {
+fn execute_tool<B: RunBrowser>(
+    call: &tool::ToolCall,
+    root: &Path,
+    browser: Option<&B>,
+    active_file: &Path,
+) -> String {
     match call.tool.as_str() {
-        "search" => tools::search::SearchTool::new(root.to_path_buf()).execute(&call.input),
+        "search" => tools::search::SearchTool::new(root.to_path_buf())
+            .exclude(active_file.to_path_buf())
+            .execute(&call.input),
         "read" => tools::read::ReadTool::new(root.to_path_buf()).execute(&call.input),
         "write" => tools::write::WriteTool::new(root.to_path_buf()).execute(&call.input),
         "edit" => tools::edit::EditTool::new(root.to_path_buf()).execute(&call.input),

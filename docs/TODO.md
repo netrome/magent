@@ -1,5 +1,12 @@
 # TODO
 
+## Done
+
+### Search tool fixes (project 010)
+- [x] Position-independent option parsing
+- [x] Exclude active task file from search
+
+
 ### File operations
 - [x] Shared path validation utility
 - [x] Write tool
@@ -7,9 +14,7 @@
 - [x] Move tool
 - [x] Delete tool
 - [x] Remove legacy edit
-- [ ] End to end integration test
-
-## Done
+- [x] End to end integration test
 
 ### Incremental response writing
 - [x] Response block status parsing

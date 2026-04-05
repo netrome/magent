@@ -5,11 +5,20 @@ use std::path::{Path, PathBuf};
 /// Searches markdown files across the knowledge base.
 pub struct SearchTool {
     root: PathBuf,
+    exclude: Option<PathBuf>,
 }
 
 impl SearchTool {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            exclude: None,
+        }
+    }
+
+    pub fn exclude(mut self, path: PathBuf) -> Self {
+        self.exclude = Some(path);
+        self
     }
 
     /// Execute a search query. Returns formatted results or an error message.
@@ -33,7 +42,7 @@ impl SearchTool {
             Err(msg) => return msg,
         };
 
-        let mut files = collect_files(&search_dir, &options.glob);
+        let mut files = collect_files(&search_dir, &options.glob, &self.exclude);
         files.sort();
 
         let results = search_files(&files, &self.root, &regex);
@@ -68,32 +77,25 @@ struct SearchOptions {
     query: String,
 }
 
-/// Greedy prefix parse: consume recognized `key:value` tokens from the front,
-/// stop at the first unrecognized token. Everything remaining is the query.
+/// Parse input with position-independent options: extract recognized `key:value`
+/// tokens from any position, join the remaining tokens as the query.
 fn parse_input(input: &str) -> SearchOptions {
     let mut path = None;
     let mut glob = "*.md".to_string();
     let mut max = 20;
-    let mut remaining = input.trim();
+    let mut query_parts = Vec::new();
 
-    loop {
-        remaining = remaining.trim_start();
-        if let Some(rest) = remaining.strip_prefix("path:") {
-            let (value, rest) = next_token(rest);
+    for token in input.split_whitespace() {
+        if let Some(value) = token.strip_prefix("path:") {
             path = Some(value.to_string());
-            remaining = rest;
-        } else if let Some(rest) = remaining.strip_prefix("glob:") {
-            let (value, rest) = next_token(rest);
+        } else if let Some(value) = token.strip_prefix("glob:") {
             glob = value.to_string();
-            remaining = rest;
-        } else if let Some(rest) = remaining.strip_prefix("max:") {
-            let (value, rest) = next_token(rest);
+        } else if let Some(value) = token.strip_prefix("max:") {
             if let Ok(n) = value.parse() {
                 max = n;
             }
-            remaining = rest;
         } else {
-            break;
+            query_parts.push(token);
         }
     }
 
@@ -101,27 +103,19 @@ fn parse_input(input: &str) -> SearchOptions {
         path,
         glob,
         max,
-        query: remaining.trim().to_string(),
-    }
-}
-
-/// Split at the first whitespace: returns (token, rest).
-fn next_token(s: &str) -> (&str, &str) {
-    match s.find(char::is_whitespace) {
-        Some(i) => (&s[..i], &s[i..]),
-        None => (s, ""),
+        query: query_parts.join(" "),
     }
 }
 
 // --- File collection ---
 
-fn collect_files(dir: &Path, glob: &str) -> Vec<PathBuf> {
+fn collect_files(dir: &Path, glob: &str, exclude: &Option<PathBuf>) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    walk_dir(dir, glob, &mut files);
+    walk_dir(dir, glob, exclude, &mut files);
     files
 }
 
-fn walk_dir(dir: &Path, glob: &str, files: &mut Vec<PathBuf>) {
+fn walk_dir(dir: &Path, glob: &str, exclude: &Option<PathBuf>, files: &mut Vec<PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -129,8 +123,13 @@ fn walk_dir(dir: &Path, glob: &str, files: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            walk_dir(&path, glob, files);
+            walk_dir(&path, glob, exclude, files);
         } else if matches_glob(&path, glob) {
+            if let Some(excluded) = exclude
+                && path == *excluded
+            {
+                continue;
+            }
             files.push(path);
         }
     }
@@ -321,12 +320,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_input__should_stop_at_non_option_token() {
-        // "something" is not a known key:value, so parsing stops there
+    fn parse_input__should_extract_options_from_any_position() {
         let opts = parse_input("path:notes/ something max:10");
-        assert_eq!(opts.query, "something max:10");
+        assert_eq!(opts.query, "something");
         assert_eq!(opts.path, Some("notes/".to_string()));
-        assert_eq!(opts.max, 20); // default — not parsed
+        assert_eq!(opts.max, 10);
+    }
+
+    #[test]
+    fn parse_input__should_extract_query_before_options() {
+        let opts = parse_input("KZG path:. max:50");
+        assert_eq!(opts.query, "KZG");
+        assert_eq!(opts.path, Some(".".to_string()));
+        assert_eq!(opts.max, 50);
     }
 
     #[test]
@@ -660,6 +666,23 @@ mod tests {
 
         // Then: finds the good file, silently skips the bad one
         assert!(result.contains("good.md"));
+        assert!(result.contains("1 match across 1 file:"));
+    }
+
+    #[test]
+    fn execute__should_exclude_active_file() {
+        // Given: two files with matching content, one excluded
+        let dir = tempdir().unwrap();
+        create_file(dir.path(), "notes.md", "KZG commitments");
+        create_file(dir.path(), "agent.md", "KZG search query in conversation");
+        let tool = SearchTool::new(dir.path().to_path_buf()).exclude(dir.path().join("agent.md"));
+
+        // When
+        let result = tool.execute("KZG");
+
+        // Then: finds notes.md but not the excluded agent.md
+        assert!(result.contains("notes.md"));
+        assert!(!result.contains("agent.md"));
         assert!(result.contains("1 match across 1 file:"));
     }
 }
