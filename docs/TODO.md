@@ -1,15 +1,22 @@
 # TODO
 
-### Incremental response writing
-- [x] Message reconstruction from response content
-- [x] Incremental writing in the tool-use loop
-- [x] Crash recovery
+### File operations
+- [x] Shared path validation utility
+- [x] Write tool
+- [ ] Edit tool
+- [ ] Move tool
+- [ ] Delete tool
+- [ ] Remove legacy edit
+- [ ] End to end integration test
 
 ## Done
 
 ### Incremental response writing
 - [x] Response block status parsing
 - [x] Writer support for in-progress response blocks
+- [x] Message reconstruction from response content
+- [x] Incremental writing in the tool-use loop
+- [x] Crash recovery
 
 ### MVP
 - [x] PR 1: Project skeleton + CLI (`clap`, arg parsing, signal handling)
