@@ -95,6 +95,18 @@ Input format:
 First line is the relative path. --- separator. Everything after is the file content.
 Creates intermediate directories as needed. Returns confirmation with path and byte count.
 
+## edit
+Search-and-replace in any file in the knowledge base (including the current document).
+Input format:
+  path/to/file.md
+  <<<<<<< SEARCH
+  exact text to find
+  =======
+  replacement text
+  >>>>>>> REPLACE
+First line is the relative path. Then one or more search/replace blocks.
+Each block replaces the first occurrence only. Use read first to see exact file content.
+
 {browser_tool}\
 === END TOOLS ===";
 

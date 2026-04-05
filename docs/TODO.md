@@ -3,7 +3,7 @@
 ### File operations
 - [x] Shared path validation utility
 - [x] Write tool
-- [ ] Edit tool
+- [x] Edit tool
 - [ ] Move tool
 - [ ] Delete tool
 - [ ] Remove legacy edit
