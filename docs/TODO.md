@@ -6,7 +6,7 @@
 - [x] Edit tool
 - [x] Move tool
 - [x] Delete tool
-- [ ] Remove legacy edit
+- [x] Remove legacy edit
 - [ ] End to end integration test
 
 ## Done

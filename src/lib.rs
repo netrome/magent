@@ -1,5 +1,4 @@
 pub mod context;
-pub mod edit;
 pub mod llm;
 pub mod parser;
 pub mod tool;
@@ -161,16 +160,6 @@ async fn process_file<B: RunBrowser>(
         }
     };
 
-    // Handle accepted edits before processing new directives.
-    // The file write triggers the watcher again for any remaining work.
-    if let Some(updated) = edit::process_accepted_edits(&content) {
-        info!(path = %path.display(), "Applying accepted edits");
-        if let Err(e) = std::fs::write(path, updated) {
-            error!(path = %path.display(), error = %e, "Failed to write edits");
-        }
-        return;
-    }
-
     let directives = parser::parse_directives(&content);
 
     for directive in directives.iter().filter(|d| {
@@ -318,8 +307,7 @@ async fn process_directive<B: RunBrowser>(
         let Some(call) = tool_call else {
             debug!("No tool call, writing final response");
             full_response.push_str(&llm_response);
-            let formatted = format_response(&full_response);
-            if let Err(e) = writer::write_response_block(path, prompt, &formatted, false) {
+            if let Err(e) = writer::write_response_block(path, prompt, &full_response, false) {
                 error!(error = %e, "Failed to write final response");
             }
             return;
@@ -390,19 +378,6 @@ fn execute_tool<B: RunBrowser>(call: &tool::ToolCall, root: &Path, browser: Opti
             None => "Error: browser tool is not available".to_string(),
         },
         _ => format!("Unknown tool: {}", call.tool),
-    }
-}
-
-/// Format an LLM response for writing into the document.
-///
-/// If the response contains edit blocks, formats them as `status="proposed"`.
-/// Otherwise returns the response as-is (plain text).
-fn format_response(llm_response: &str) -> String {
-    let (edits, summary) = edit::parse_edits(llm_response);
-    if edits.is_empty() {
-        llm_response.to_string()
-    } else {
-        edit::format_proposed_edits(&edits, &summary)
     }
 }
 
@@ -674,195 +649,6 @@ mod tests {
         assert!(
             system_content.contains("The sky is blue."),
             "document context should contain the file body"
-        );
-    }
-
-    #[tokio::test]
-    async fn process_file__should_write_proposed_edits_when_llm_returns_edit_blocks() {
-        // Given
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.md");
-        std::fs::write(
-            &path,
-            "# Links\n\n- [Rust](htps://rust-lang.org)\n\n@magent fix the broken URL\n",
-        )
-        .unwrap();
-
-        let llm_response = "\
-Fixed the URL:
-<magent-edit>
-<magent-search>htps://rust-lang.org</magent-search>
-<magent-replace>https://rust-lang.org</magent-replace>
-</magent-edit>";
-        let client = FakeLlm(llm_response.to_string());
-
-        // When
-        process_file(&path, &client, dir.path(), NO_BROWSER).await;
-
-        // Then
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            content.contains("status=\"proposed\""),
-            "should contain proposed status"
-        );
-        assert!(content.contains("<magent-search>htps://rust-lang.org</magent-search>"));
-        assert!(content.contains("<magent-replace>https://rust-lang.org</magent-replace>"));
-        // Document content should NOT be modified
-        assert!(
-            content.contains("- [Rust](htps://rust-lang.org)"),
-            "original document should be unchanged"
-        );
-    }
-
-    #[tokio::test]
-    async fn process_file__should_not_contain_edit_blocks_for_plain_text_response() {
-        // Given
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.md");
-        std::fs::write(&path, "@magent what is Rust?\n").unwrap();
-        let client = FakeLlm("Rust is a systems programming language.".to_string());
-
-        // When
-        process_file(&path, &client, dir.path(), NO_BROWSER).await;
-
-        // Then
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("Rust is a systems programming language."));
-        assert!(
-            !content.contains("magent-edit"),
-            "should not contain edit blocks"
-        );
-    }
-
-    #[tokio::test]
-    async fn process_file__should_write_proposed_edits_parseable_by_edit_block_parser() {
-        // Given
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.md");
-        std::fs::write(&path, "old text here\n\n@magent fix this\n").unwrap();
-
-        let llm_response = "\
-<magent-edit>
-<magent-search>old text</magent-search>
-<magent-replace>new text</magent-replace>
-</magent-edit>";
-        let client = FakeLlm(llm_response.to_string());
-
-        // When
-        process_file(&path, &client, dir.path(), NO_BROWSER).await;
-
-        // Then — the written response should be parseable by parse_edit_blocks
-        let content = std::fs::read_to_string(&path).unwrap();
-        let resp_start = content.find("<magent-response>\n").unwrap() + "<magent-response>\n".len();
-        let resp_end = content.find("\n</magent-response>").unwrap();
-        let response_content = &content[resp_start..resp_end];
-
-        let blocks = edit::parse_edit_blocks(response_content);
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].status, edit::EditStatus::Proposed);
-        assert_eq!(blocks[0].search, "old text");
-        assert_eq!(blocks[0].replace, "new text");
-    }
-
-    #[tokio::test]
-    async fn process_file__should_apply_accepted_edits() {
-        // Given — file with an accepted edit (simulates user accepting a proposal)
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.md");
-        std::fs::write(
-            &path,
-            "\
-# Links
-
-- [Rust](htps://rust-lang.org)
-
-@magent fix the URL
-
-<magent-response>
-Fixed:
-<magent-edit status=\"accepted\">
-<magent-search>htps://rust-lang.org</magent-search>
-<magent-replace>https://rust-lang.org</magent-replace>
-</magent-edit>
-</magent-response>
-",
-        )
-        .unwrap();
-        let client = SpyLlm {
-            response: "Should not be called".to_string(),
-            call_count: AtomicUsize::new(0),
-        };
-
-        // When
-        process_file(&path, &client, dir.path(), NO_BROWSER).await;
-
-        // Then — edit applied, LLM not called
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            content.contains("- [Rust](https://rust-lang.org)"),
-            "document should have the corrected URL"
-        );
-        assert!(
-            content.contains("status=\"applied\""),
-            "status should be updated to applied"
-        );
-        assert!(
-            !content.contains("status=\"accepted\""),
-            "no accepted statuses should remain"
-        );
-        assert_eq!(
-            client.call_count.load(Ordering::Relaxed),
-            0,
-            "LLM should not be called when processing accepted edits"
-        );
-    }
-
-    #[tokio::test]
-    async fn process_file__full_propose_accept_apply_lifecycle() {
-        // Given — start with a document and directive
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.md");
-        std::fs::write(
-            &path,
-            "# Links\n\n- [Rust](htps://rust-lang.org)\n\n@magent fix the broken URL\n",
-        )
-        .unwrap();
-
-        let llm_response = "\
-Fixed the URL:
-<magent-edit>
-<magent-search>htps://rust-lang.org</magent-search>
-<magent-replace>https://rust-lang.org</magent-replace>
-</magent-edit>";
-        let client = FakeLlm(llm_response.to_string());
-
-        // Step 1: Process directive — should propose edits
-        process_file(&path, &client, dir.path(), NO_BROWSER).await;
-        let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("status=\"proposed\""));
-        assert!(
-            content.contains("- [Rust](htps://rust-lang.org)"),
-            "document unchanged after proposal"
-        );
-
-        // Step 2: Simulate user accepting the edit
-        let accepted = content.replace("status=\"proposed\"", "status=\"accepted\"");
-        std::fs::write(&path, &accepted).unwrap();
-
-        // Step 3: Process acceptance — should apply edits
-        process_file(&path, &client, dir.path(), NO_BROWSER).await;
-        let final_content = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            final_content.contains("- [Rust](https://rust-lang.org)"),
-            "document should have the corrected URL"
-        );
-        assert!(
-            final_content.contains("status=\"applied\""),
-            "status should be applied"
-        );
-        assert!(
-            !final_content.contains("status=\"accepted\""),
-            "no accepted statuses should remain"
         );
     }
 
