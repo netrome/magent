@@ -86,6 +86,15 @@ Read the full content of a file in the knowledge base.
 Input: a relative file path, optionally followed by a line range (e.g. notes/rust.md 40-60)
 Returns: the file content with line numbers.
 
+## write
+Create or overwrite a file in the knowledge base.
+Input format:
+  path/to/file.md
+  ---
+  file content here
+First line is the relative path. --- separator. Everything after is the file content.
+Creates intermediate directories as needed. Returns confirmation with path and byte count.
+
 {browser_tool}\
 === END TOOLS ===";
 

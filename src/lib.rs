@@ -381,6 +381,7 @@ fn execute_tool<B: RunBrowser>(call: &tool::ToolCall, root: &Path, browser: Opti
     match call.tool.as_str() {
         "search" => tools::search::SearchTool::new(root.to_path_buf()).execute(&call.input),
         "read" => tools::read::ReadTool::new(root.to_path_buf()).execute(&call.input),
+        "write" => tools::write::WriteTool::new(root.to_path_buf()).execute(&call.input),
         "browser" => match browser {
             Some(b) => b.run_browser(&call.input),
             None => "Error: browser tool is not available".to_string(),
