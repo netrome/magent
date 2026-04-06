@@ -167,54 +167,118 @@ The LLM can chain them naturally: search → pick a result → open with browser
 
 ## Implementation
 
-### New module: `tools/web_search.rs`
+### Architecture: provider trait
+
+The tool is split into two layers: a **provider trait** that abstracts the search API, and the **tool struct** that owns input parsing and output formatting. This mirrors the `RunBrowser` / `AgentBrowser` split used by the browser tool.
 
 ```rust
-pub struct WebSearchTool {
+// tools/web_search.rs — shared types and tool logic
+
+pub struct SearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+}
+
+pub enum SearchError {
+    Auth(String),
+    RateLimited,
+    Request(String),
+    Parse(String),
+}
+
+pub trait SearchProvider {
+    fn search(&self, query: &str, count: usize) -> Result<Vec<SearchResult>, SearchError>;
+}
+```
+
+The trait returns structured data (not raw strings) because search results are uniform across providers — title, URL, snippet. This means formatting is written once in the tool, not duplicated per provider.
+
+### Tool struct
+
+```rust
+pub struct WebSearchTool<P: SearchProvider> {
+    provider: P,
+}
+
+impl<P: SearchProvider> WebSearchTool<P> {
+    pub fn new(provider: P) -> Self { ... }
+
+    pub fn execute(&self, input: &str) -> String {
+        let (query, count) = parse_input(input);
+        match self.provider.search(&query, count) {
+            Ok(results) if results.is_empty() => format!("No results found for: {query}"),
+            Ok(results) => format_results(&results),
+            Err(e) => format_error(e),
+        }
+    }
+}
+```
+
+Internal helpers:
+- `parse_input(input) -> (query, count)` — extract optional `count:N` prefix, default count 5
+- `format_results(results) -> String` — numbered list of title/URL/snippet
+- `format_error(error) -> String` — user-facing error message
+
+### Brave Search provider
+
+Lives in its own submodule. Only this module knows about Brave's API format.
+
+```rust
+// tools/web_search/brave.rs
+
+pub struct BraveSearchProvider {
     http: reqwest::blocking::Client,
     api_key: String,
 }
 
-impl WebSearchTool {
+impl BraveSearchProvider {
     pub fn new(api_key: String) -> Self { ... }
-    pub fn execute(&self, input: &str) -> String { ... }
+}
+
+impl SearchProvider for BraveSearchProvider {
+    fn search(&self, query: &str, count: usize) -> Result<Vec<SearchResult>, SearchError> {
+        // GET https://api.search.brave.com/res/v1/web/search?q={query}&count={count}
+        // Header: X-Subscription-Token: {api_key}
+        // Deserialize BraveResponse, map to Vec<SearchResult>
+    }
 }
 ```
 
-Uses `reqwest::blocking::Client` since tool execution is synchronous (same as the rest of the tool system). The client is created once and reused across calls.
-
-Internal helpers:
-- `parse_input(input) -> (query, count)` — extract optional `count:N` prefix
-- `format_results(response) -> String` — extract `web.results` and format as numbered list
-
-### Serde response types
-
-Minimal structs to deserialize only the fields we need:
+Brave-specific serde types (private to the submodule):
 
 ```rust
 #[derive(Deserialize)]
-struct BraveSearchResponse {
-    web: Option<WebResults>,
+struct BraveResponse {
+    web: Option<BraveWebResults>,
 }
 
 #[derive(Deserialize)]
-struct WebResults {
-    results: Vec<WebResult>,
+struct BraveWebResults {
+    results: Vec<BraveWebResult>,
 }
 
 #[derive(Deserialize)]
-struct WebResult {
+struct BraveWebResult {
     title: String,
     url: String,
     description: String,
 }
 ```
 
-These are private to the module. We don't need `age`, `type`, or any other fields for the initial version.
+Uses `reqwest::blocking::Client` since tool execution is synchronous (same as the rest of the tool system). The client is created once and reused across calls.
+
+### Swapping providers
+
+Adding a new provider (e.g., SearXNG) means:
+1. Add `tools/web_search/searxng.rs` implementing `SearchProvider`
+2. Change which provider is constructed at startup
+
+No changes to tool dispatch, system prompt, formatting, or tests (beyond adding provider-specific unit tests).
 
 ### Tool dispatch (`lib.rs`)
 
-Add `"web_search"` arm to `execute_tool`. The `WebSearchTool` instance is created in the processing loop (like browser availability) and passed through, or created once at startup if the API key is present.
+Add `"web_search"` arm to `execute_tool`. The `WebSearchTool` instance is created at startup when `BRAVE_SEARCH_API_KEY` is set and passed through.
 
 ```rust
 "web_search" => match web_search {
@@ -229,35 +293,53 @@ Add a `{web_search_tool}` placeholder in the system prompt template, conditional
 
 ## Testing
 
-### Unit tests (no API calls)
+### Tool-level tests (with FakeSearchProvider)
 
-All tests use canned JSON responses. No real API calls in the test suite.
+A `FakeSearchProvider` implements `SearchProvider` with canned results, used for all tool-level tests. No HTTP calls involved.
 
+```rust
+struct FakeSearchProvider {
+    response: Result<Vec<SearchResult>, SearchError>,
+}
+
+impl SearchProvider for FakeSearchProvider {
+    fn search(&self, _query: &str, _count: usize) -> Result<Vec<SearchResult>, SearchError> {
+        self.response.clone()
+    }
+}
+```
+
+Test cases:
 - **Input parsing**: `count:5 query` → (query, 5); `query` → (query, 5); `count:abc query` → error
-- **Response formatting**: valid JSON → numbered result list
-- **Empty results**: `web.results` is empty → "No results found"
-- **Missing web field**: `web` is null → "No results found"
-- **Error responses**: 401, 429, 500 → appropriate error messages
-- **Query length**: input exceeding 400 chars → truncated or error
+- **Result formatting**: results → numbered list with title/URL/snippet
+- **Empty results**: provider returns empty vec → "No results found"
+- **Error handling**: each `SearchError` variant → appropriate error message
+- **Query passthrough**: query and count correctly forwarded to provider
+
+### Provider tests (BraveSearchProvider with wiremock)
+
+Use `wiremock` (already a dev dependency) to test the Brave provider's HTTP layer in isolation:
+- Correct URL, headers (`X-Subscription-Token`), query parameters sent
+- Valid JSON response → `Vec<SearchResult>` with correct field mapping
+- Empty/missing `web.results` → empty vec
+- HTTP 401 → `SearchError::Auth`
+- HTTP 429 → `SearchError::RateLimited`
+- HTTP 500 → `SearchError::Request`
+- Network failure → `SearchError::Request`
+- Malformed JSON → `SearchError::Parse`
 
 ### Integration tests
 
 - **Tool dispatch**: `execute_tool` routes `"web_search"` correctly when available/unavailable
 - **System prompt**: web search section included when API key set, excluded when not
-- **Multi-tool flow**: directive using both `web_search` and `browser` in sequence (fake LLM + canned responses)
-
-### HTTP mocking
-
-Use `wiremock` (already a dev dependency) to test the actual HTTP request/response cycle:
-- Correct URL, headers, query parameters sent
-- JSON response deserialized correctly
-- Network errors handled gracefully
+- **Multi-tool flow**: directive using both `web_search` and `browser` in sequence (fake LLM + fake providers)
 
 ## Changes needed
 
 | File | Change |
 |------|--------|
-| `src/tools/web_search.rs` | New module: `WebSearchTool`, input parsing, response formatting, HTTP client |
+| `src/tools/web_search/mod.rs` | New module: `SearchProvider` trait, `SearchResult`, `SearchError`, `WebSearchTool<P>`, input parsing, result formatting |
+| `src/tools/web_search/brave.rs` | New: `BraveSearchProvider` implementing `SearchProvider`, Brave-specific serde types |
 | `src/tools/mod.rs` | Add `pub mod web_search;` |
 | `src/lib.rs` | Add `"web_search"` arm to `execute_tool`, create tool instance at startup |
 | `src/llm.rs` | Add `{web_search_tool}` placeholder + web search tool docs + conditional inclusion |
@@ -272,30 +354,43 @@ Use `wiremock` (already a dev dependency) to test the actual HTTP request/respon
 
 ## Task breakdown
 
-### PR 1: WebSearchTool implementation + unit tests
+### PR 1: SearchProvider trait + WebSearchTool + unit tests
 
 **Changes:**
-- `src/tools/web_search.rs`: `WebSearchTool` struct, `execute()`, input parsing, response formatting
+- `src/tools/web_search/mod.rs`: `SearchProvider` trait, `SearchResult`, `SearchError`, `WebSearchTool<P>`, `parse_input()`, `format_results()`, `format_error()`
 - `src/tools/mod.rs`: add module
-- Unit tests with canned JSON for all paths (success, empty, errors)
-- `wiremock` tests for HTTP request/response cycle
+- Unit tests using `FakeSearchProvider` for all tool-level paths (input parsing, formatting, empty results, error variants)
 
 **Acceptance criteria:**
-- Valid query → formatted result list
+- `SearchProvider` trait defined with `search(&self, query, count) -> Result<Vec<SearchResult>, SearchError>`
+- `WebSearchTool::execute()` parses input, delegates to provider, formats output
 - `count:N` prefix parsed correctly, default is 5
-- Empty/missing results → "No results found"
-- HTTP errors (401, 429, 500) → descriptive error messages
-- Network failure → error message (not panic)
-- Correct URL, headers, query params sent to Brave API
+- Empty results → "No results found"
+- Each `SearchError` variant → descriptive error string
+- All tests pass with `FakeSearchProvider` (no HTTP)
 
-### PR 2: Wire into tool dispatch + system prompt
+### PR 2: BraveSearchProvider + wiremock tests
 
 **Changes:**
-- `src/lib.rs`: create `WebSearchTool` at startup when `BRAVE_SEARCH_API_KEY` is set, add dispatch arm
+- `src/tools/web_search/brave.rs`: `BraveSearchProvider` implementing `SearchProvider`, Brave-specific serde types
+
+**Acceptance criteria:**
+- Correct URL (`https://api.search.brave.com/res/v1/web/search`), headers (`X-Subscription-Token`), query params (`q`, `count`) sent
+- Valid Brave JSON response → `Vec<SearchResult>` with correct field mapping
+- Empty/missing `web.results` → empty vec
+- HTTP 401 → `SearchError::Auth`, 429 → `SearchError::RateLimited`, 500 → `SearchError::Request`
+- Network failure → `SearchError::Request`
+- Malformed JSON → `SearchError::Parse`
+- All tests use `wiremock` (no real API calls)
+
+### PR 3: Wire into tool dispatch + system prompt
+
+**Changes:**
+- `src/lib.rs`: create `WebSearchTool<BraveSearchProvider>` at startup when `BRAVE_SEARCH_API_KEY` is set, add dispatch arm
 - `src/llm.rs`: add conditional web search tool section to system prompt
 
 **Acceptance criteria:**
 - When `BRAVE_SEARCH_API_KEY` is set: tool appears in system prompt, `web_search` calls dispatched correctly
 - When key is unset: tool absent from system prompt, `web_search` calls return error
-- Integration test: multi-turn directive with fake LLM using web search tool
+- Integration test: multi-turn directive with fake LLM using web search tool (via `FakeSearchProvider`)
 - API key never appears in logs or tool output
