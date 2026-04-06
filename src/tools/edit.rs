@@ -40,8 +40,21 @@ impl EditTool {
             if let Some(pos) = modified.find(&block.search) {
                 modified.replace_range(pos..pos + block.search.len(), &block.replace);
                 applied += 1;
+            } else if let Some((start, end)) = find_whitespace_tolerant(&modified, &block.search) {
+                modified.replace_range(start..end, &block.replace);
+                applied += 1;
             } else {
-                details.push(format!("Block {}: search text not found", i + 1));
+                let mut detail = format!("Block {}: search text not found", i + 1);
+                if let Some(best) = find_best_match(&modified, &block.search) {
+                    detail.push_str(&format!(
+                        "\n  Best match ({}/{} lines) near line {}:",
+                        best.matching_lines, best.total_lines, best.line_number
+                    ));
+                    for line in best.content.lines() {
+                        detail.push_str(&format!("\n    {line}"));
+                    }
+                }
+                details.push(detail);
             }
         }
 
@@ -159,6 +172,102 @@ fn parse_blocks(input: &str) -> Result<Vec<EditBlock>, String> {
     }
 
     Ok(blocks)
+}
+
+/// Find `search` in `content` using whitespace-tolerant line matching.
+///
+/// Each line is compared after stripping leading/trailing whitespace.
+/// Line count must match exactly. Returns the byte range in `content`
+/// that corresponds to the matched lines.
+fn find_whitespace_tolerant(content: &str, search: &str) -> Option<(usize, usize)> {
+    let search_lines: Vec<&str> = search.lines().collect();
+    if search_lines.is_empty() {
+        return None;
+    }
+
+    let search_trimmed: Vec<&str> = search_lines.iter().map(|l| l.trim()).collect();
+
+    // Collect content lines with their byte offsets.
+    let content_lines: Vec<(usize, &str)> = {
+        let mut lines = Vec::new();
+        let mut offset = 0;
+        for line in content.lines() {
+            lines.push((offset, line));
+            offset += line.len() + 1; // +1 for \n
+        }
+        lines
+    };
+
+    if search_lines.len() > content_lines.len() {
+        return None;
+    }
+
+    for i in 0..=content_lines.len() - search_lines.len() {
+        let all_match =
+            (0..search_lines.len()).all(|j| content_lines[i + j].1.trim() == search_trimmed[j]);
+
+        if all_match {
+            let start = content_lines[i].0;
+            let last = i + search_lines.len() - 1;
+            let end = content_lines[last].0 + content_lines[last].1.len();
+            return Some((start, end));
+        }
+    }
+
+    None
+}
+
+struct BestMatch {
+    matching_lines: usize,
+    total_lines: usize,
+    line_number: usize, // 1-based
+    content: String,
+}
+
+/// Slide a window over `content` and find the region most similar to `search`.
+///
+/// Scores by counting lines where trimmed content matches. Returns the best
+/// region if it exceeds 50% of lines matching.
+fn find_best_match(content: &str, search: &str) -> Option<BestMatch> {
+    let search_lines: Vec<&str> = search.lines().collect();
+    let content_lines: Vec<&str> = content.lines().collect();
+
+    if search_lines.is_empty() || content_lines.is_empty() {
+        return None;
+    }
+
+    let search_trimmed: Vec<&str> = search_lines.iter().map(|l| l.trim()).collect();
+    let window = search_lines.len();
+
+    if window > content_lines.len() {
+        return None;
+    }
+
+    let mut best_score = 0;
+    let mut best_idx = 0;
+
+    for i in 0..=content_lines.len() - window {
+        let score = (0..window)
+            .filter(|&j| content_lines[i + j].trim() == search_trimmed[j])
+            .count();
+
+        if score > best_score {
+            best_score = score;
+            best_idx = i;
+        }
+    }
+
+    // >50% threshold
+    if best_score * 2 <= search_lines.len() {
+        return None;
+    }
+
+    Some(BestMatch {
+        matching_lines: best_score,
+        total_lines: search_lines.len(),
+        line_number: best_idx + 1,
+        content: content_lines[best_idx..best_idx + window].join("\n"),
+    })
 }
 
 #[cfg(test)]
@@ -509,5 +618,203 @@ of content.
             fs::read_to_string(dir.path().join("test.md")).unwrap(),
             "# Title\n\nNew paragraph\nwith three lines\nof content.\n\n## Next"
         );
+    }
+
+    // --- find_whitespace_tolerant ---
+
+    #[test]
+    fn find_whitespace_tolerant__should_match_different_indentation() {
+        let content = "fn main() {\n    let x = 1;\n}\n";
+        let search = "  let x = 1;";
+        let result = find_whitespace_tolerant(content, search);
+        assert!(result.is_some());
+        let (start, end) = result.unwrap();
+        assert_eq!(&content[start..end], "    let x = 1;");
+    }
+
+    #[test]
+    fn find_whitespace_tolerant__should_match_tabs_vs_spaces() {
+        let content = "\tlet x = 1;\n\tlet y = 2;";
+        let search = "    let x = 1;\n    let y = 2;";
+        let result = find_whitespace_tolerant(content, search);
+        assert!(result.is_some());
+        let (start, end) = result.unwrap();
+        assert_eq!(&content[start..end], "\tlet x = 1;\n\tlet y = 2;");
+    }
+
+    #[test]
+    fn find_whitespace_tolerant__should_match_trailing_spaces() {
+        let content = "hello world";
+        let search = "hello world   ";
+        let result = find_whitespace_tolerant(content, search);
+        assert!(result.is_some());
+        let (start, end) = result.unwrap();
+        assert_eq!(&content[start..end], "hello world");
+    }
+
+    #[test]
+    fn find_whitespace_tolerant__should_fail_when_content_differs() {
+        let content = "let x = 1;";
+        let search = "let x = 2;";
+        assert!(find_whitespace_tolerant(content, search).is_none());
+    }
+
+    #[test]
+    fn find_whitespace_tolerant__should_fail_when_line_count_differs() {
+        let content = "line one\nline two";
+        let search = "line one\nline two\nline three";
+        assert!(find_whitespace_tolerant(content, search).is_none());
+    }
+
+    #[test]
+    fn find_whitespace_tolerant__should_return_correct_offsets_in_middle_of_file() {
+        let content = "aaa\n  bbb\n  ccc\nddd";
+        let search = "bbb\nccc";
+        let result = find_whitespace_tolerant(content, search);
+        assert!(result.is_some());
+        let (start, end) = result.unwrap();
+        assert_eq!(&content[start..end], "  bbb\n  ccc");
+    }
+
+    // --- find_best_match ---
+
+    #[test]
+    fn find_best_match__should_find_similar_region_above_threshold() {
+        let content = "fn main() {\n    let x = 1;\n    let y = 2;\n    println!(\"hi\");\n}";
+        // 3/4 lines match (fn main, let x, println) — differs on let y vs let z
+        let search = "fn main() {\n    let x = 1;\n    let z = 99;\n    println!(\"hi\");";
+        let result = find_best_match(content, search);
+        assert!(result.is_some());
+        let best = result.unwrap();
+        assert_eq!(best.matching_lines, 3);
+        assert_eq!(best.total_lines, 4);
+        assert_eq!(best.line_number, 1);
+    }
+
+    #[test]
+    fn find_best_match__should_return_none_below_threshold() {
+        let content = "aaa\nbbb\nccc\nddd";
+        let search = "xxx\nyyy\nzzz\nwww";
+        assert!(find_best_match(content, search).is_none());
+    }
+
+    #[test]
+    fn find_best_match__should_report_correct_line_number() {
+        // The similar region starts at line 3 (1-based)
+        let content = "header\nblank\nfn foo() {\n    let a = 1;\n    let b = 2;\n}";
+        let search = "fn foo() {\n    let a = 1;\n    let c = 3;\n}";
+        let result = find_best_match(content, search);
+        assert!(result.is_some());
+        let best = result.unwrap();
+        assert_eq!(best.line_number, 3);
+        assert_eq!(best.matching_lines, 3); // fn foo, let a, } match; let c differs
+        assert_eq!(best.total_lines, 4);
+    }
+
+    // --- execute: whitespace-tolerant matching ---
+
+    #[test]
+    fn execute__whitespace__should_match_with_different_indentation() {
+        let dir = tempdir().unwrap();
+        create_file(dir.path(), "test.md", "fn main() {\n    let x = 1;\n}");
+        let tool = EditTool::new(dir.path().to_path_buf());
+
+        let input = "test.md\n\
+<search>
+fn main() {
+  let x = 1;
+}
+</search>
+<replace>
+fn main() {
+    let x = 2;
+}
+</replace>";
+
+        let result = tool.execute(input);
+
+        assert_eq!(result, "Applied 1/1 edits to test.md");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("test.md")).unwrap(),
+            "fn main() {\n    let x = 2;\n}"
+        );
+    }
+
+    #[test]
+    fn execute__whitespace__should_prefer_exact_match() {
+        let dir = tempdir().unwrap();
+        create_file(dir.path(), "test.md", "  hello\nhello");
+        let tool = EditTool::new(dir.path().to_path_buf());
+
+        // Exact match for "hello" (no leading spaces) should match the second line
+        let result =
+            tool.execute("test.md\n<search>\nhello\n</search>\n<replace>\nworld\n</replace>");
+
+        assert_eq!(result, "Applied 1/1 edits to test.md");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("test.md")).unwrap(),
+            "  world\nhello"
+        );
+    }
+
+    #[test]
+    fn execute__whitespace__should_match_tabs_vs_spaces() {
+        let dir = tempdir().unwrap();
+        create_file(dir.path(), "test.md", "\tindented line");
+        let tool = EditTool::new(dir.path().to_path_buf());
+
+        let result = tool.execute(
+            "test.md\n<search>\n    indented line\n</search>\n<replace>\n\tmodified line\n</replace>",
+        );
+
+        assert_eq!(result, "Applied 1/1 edits to test.md");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("test.md")).unwrap(),
+            "\tmodified line"
+        );
+    }
+
+    // --- execute: error messages ---
+
+    #[test]
+    fn execute__error__should_show_best_match_when_similar_region_exists() {
+        let dir = tempdir().unwrap();
+        create_file(
+            dir.path(),
+            "test.md",
+            "fn main() {\n    let x = 1;\n    let y = 2;\n    println!(\"sum\");\n}",
+        );
+        let tool = EditTool::new(dir.path().to_path_buf());
+
+        // 3/4 non-whitespace lines match, but "let z = 99" differs from "let y = 2"
+        let input = "test.md\n\
+<search>
+    let x = 1;
+    let z = 99;
+    println!(\"sum\");
+}
+</search>
+<replace>
+    changed
+</replace>";
+
+        let result = tool.execute(input);
+
+        assert!(result.contains("Applied 0/1"));
+        assert!(result.contains("Best match (3/4 lines) near line 2:"));
+        assert!(result.contains("let y = 2;"));
+    }
+
+    #[test]
+    fn execute__error__should_not_show_best_match_when_no_similar_region() {
+        let dir = tempdir().unwrap();
+        create_file(dir.path(), "test.md", "completely\ndifferent\ncontent");
+        let tool = EditTool::new(dir.path().to_path_buf());
+
+        let result =
+            tool.execute("test.md\n<search>\nxxx\nyyy\nzzz\n</search>\n<replace>\naaa\n</replace>");
+
+        assert!(result.contains("Block 1: search text not found"));
+        assert!(!result.contains("Best match"));
     }
 }

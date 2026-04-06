@@ -1,6 +1,6 @@
 # Edit Tool Robustness
 
-**Status:** In progress (PR 1 done)
+**Status:** Done
 
 ## Goal
 

@@ -63,7 +63,7 @@
 
 ### Edit tool tag format (project 011)
 - [x] PR 1: Tag-based input format (`<search>`/`<replace>` tags)
-- [ ] PR 2: Whitespace-tolerant matching and actionable error messages
+- [x] PR 2: Whitespace-tolerant matching and actionable error messages
 
 ### Parser robustness
 - [x] Skip `@magent` directives inside `<magent-response>` blocks
