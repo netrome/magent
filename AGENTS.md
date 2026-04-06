@@ -8,12 +8,12 @@ Optimize for: simplicity, hackability, minimal dependencies, and long-term maint
 - docs/STYLE.md
 - docs/ARCHITECTURE.md (when it exists)
 - docs/Adrs/*
-- docs/TODO.md (current task only)
+- docs/ROADMAP.md
 
 ## Core rules
 
 - **NO FEATURE CREEP**
-  - Implement only the explicitly requested task from `docs/TODO.md`.
+  - Implement only the explicitly requested task.
   - Keep the daemon simple — it reads markdown, calls LLMs, writes markdown.
 
 - **MARKDOWN IS THE INTERFACE**
@@ -36,11 +36,10 @@ Optimize for: simplicity, hackability, minimal dependencies, and long-term maint
 
 ## Documentation rules
 
-- `docs/TODO.md` — active tasks and next steps.
-- `docs/projects/` — project docs (numbered chronologically, each with a `Status:` line).
+- `docs/ROADMAP.md` — potential upcoming features (simple bullet list, no task breakdowns).
+- `docs/projects/` — project docs (numbered chronologically, each with a `Status:` line and task breakdown).
 - `docs/Adrs/` — architectural decision records for significant choices.
 - `docs/ARCHITECTURE.md` — high-level system overview (keep in sync with code).
-- Completed work should be checked off in TODO.md or moved out if no longer relevant.
 
 ## Work modes
 
@@ -92,7 +91,7 @@ Use when the task is exploratory/architectural or too large for a single PR.
    - `cargo clippy --all-targets --all-features`
    - `cargo nextest run` (or `cargo test` if nextest not available)
 5. Update docs if behavior/usage changed.
-6. Update `docs/TODO.md`: check off the item, add follow-ups if needed.
+6. Update the active project doc: check off completed items, add follow-ups if needed.
 7. Provide: summary of changes, tests added/updated, risks/limitations.
 
 ## What NOT to do
