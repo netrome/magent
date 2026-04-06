@@ -356,8 +356,12 @@ async fn process_directive<B: RunBrowser>(
         full_response.push_str(&completed);
         full_response.push('\n');
 
-        // Flush after LLM output
-        if let Err(e) = writer::write_response_block(path, prompt, &full_response, true) {
+        // Flush before execution only for slow tools. Fast tools (file ops)
+        // don't need it, and flushing before edits on the active file causes
+        // the search text to match its own echo in the response block.
+        if is_slow_tool(&call.tool)
+            && let Err(e) = writer::write_response_block(path, prompt, &full_response, true)
+        {
             error!(error = %e, "Failed to flush response");
         }
 
@@ -402,6 +406,12 @@ fn complete_tool_call_tag(response: &str) -> String {
     } else {
         response.to_string()
     }
+}
+
+/// Whether a tool may take noticeable time, warranting a visible flush
+/// before execution so the user sees progress.
+fn is_slow_tool(name: &str) -> bool {
+    matches!(name, "browser")
 }
 
 fn execute_tool<B: RunBrowser>(
@@ -2054,5 +2064,53 @@ Found 3 results.
         assert!(content.contains("Done!"));
         assert!(content.contains("</magent-response>"));
         assert_eq!(client.call_count(), 6);
+    }
+
+    #[tokio::test]
+    async fn process_file__edit_on_active_file_should_modify_original_content() {
+        // Given: a file where the LLM edits the same file as the directive.
+        // The search text has a minor whitespace difference (missing trailing
+        // space on "  -") so exact match fails against the original but would
+        // succeed against the echo in the response block if it were flushed.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.md");
+        std::fs::write(
+            &path,
+            "# Notes\n\n\
+             - item one \n\
+             - item two\n\n\
+             @magent tidy up the list\n",
+        )
+        .unwrap();
+
+        // Turn 1: edit — search text omits trailing space on "- item one"
+        // Turn 2: final response
+        let client = MultiTurnLlm::new(vec![
+            "<magent-tool-call tool=\"edit\">\n\
+             <magent-input>\nnotes.md\n\
+             <search>\n- item one\n- item two\n</search>\n\
+             <replace>\n- Item One\n- Item Two\n</replace>\
+             </magent-input>\n",
+            "Tidied up the list.",
+        ]);
+
+        // When
+        process_file(&path, &client, dir.path(), NO_BROWSER).await;
+
+        // Then: the original content (before the directive) should be modified
+        let content = std::fs::read_to_string(&path).unwrap();
+        let before_directive = content.split("@magent").next().unwrap();
+        assert!(
+            before_directive.contains("- Item One"),
+            "edit should have modified the original content, got:\n{content}"
+        );
+        assert!(
+            before_directive.contains("- Item Two"),
+            "edit should have modified the original content, got:\n{content}"
+        );
+        assert!(
+            !before_directive.contains("- item one"),
+            "original content should have been replaced, got:\n{content}"
+        );
     }
 }

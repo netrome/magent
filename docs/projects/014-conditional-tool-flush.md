@@ -1,6 +1,6 @@
 # 014: Conditional Pre-Execution Flush
 
-**Status:** In Progress
+**Status:** Done
 
 ## Problem
 
@@ -21,6 +21,6 @@ The post-execution flush remains unconditional — once the tool result is appen
 
 ## Tasks
 
-- [ ] Add `is_slow_tool(name: &str) -> bool` helper in `lib.rs`
-- [ ] Make pre-execution flush conditional on `is_slow_tool` in `process_directive`
-- [ ] Add test: edit tool on the active file should modify the actual content, not the response block
+- [x] Add `is_slow_tool(name: &str) -> bool` helper in `lib.rs`
+- [x] Make pre-execution flush conditional on `is_slow_tool` in `process_directive`
+- [x] Add test: edit tool on the active file should modify the actual content, not the response block
