@@ -82,6 +82,9 @@
 ### Structured logging
 - [x] Replace ad-hoc `println` statements with `tracing` logs so key flows (directive processing, LLM requests/responses, tool calls, errors) are easy to follow.
 
+### Tool usage examples in system prompt
+- [x] Add concise examples for edit and write tools in the system prompt
+
 ## Post-MVP
 
 - [ ] Config file (`.magent/config.toml`)

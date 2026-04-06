@@ -65,6 +65,16 @@ Input format:
 First line is the relative path. --- separator. Everything after is the file content.
 Creates intermediate directories as needed. Returns confirmation with path and byte count.
 
+Example:
+<magent-tool-call tool=\"write\">
+<magent-input>
+notes/ideas.md
+---
+# Ideas
+- Use markdown for everything
+</magent-input>
+</magent-tool-call>
+
 ## edit
 Search-and-replace in any file in the knowledge base (including the current document).
 Input format:
@@ -77,6 +87,19 @@ Input format:
   </replace>
 First line is the relative path. Then one or more search/replace blocks.
 Each block replaces the first occurrence only. Use read first to see exact file content.
+
+Example:
+<magent-tool-call tool=\"edit\">
+<magent-input>
+notes/rust.md
+<search>
+Rust is a systems language.
+</search>
+<replace>
+Rust is a systems programming language.
+</replace>
+</magent-input>
+</magent-tool-call>
 
 ## move
 Move or rename a file in the knowledge base.
