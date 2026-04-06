@@ -1,6 +1,6 @@
 # 012: Environment Context
 
-**Status:** Planned
+**Status:** Done
 
 ## Problem
 
@@ -95,6 +95,6 @@ Same directory (notes/):
 
 ### Task breakdown
 
-- [ ] **Add `EnvironmentContext` struct and update `build_system_prompt`** — New struct with `file_path`, `date`, `top_level`, `siblings` fields. Add `{environment}` placeholder to prompt template. Update `build_system_prompt` signature and all call sites. Add unit tests for prompt formatting.
-- [ ] **Implement environment gathering in `context.rs`** — `build_environment()` reads the root directory and current file's parent directory, builds sorted listings (dirs first, trailing `/`), skips sibling section when at root. Add unit tests with temp directories.
-- [ ] **Wire it up in `process_file`** — Call `build_environment()`, pass result to `build_system_prompt`. Update existing integration tests that call `build_system_prompt` or `process_directive`.
+- [x] **Add `EnvironmentContext` struct and update `build_system_prompt`** — New struct with `file_path`, `date`, `top_level`, `siblings` fields. Add `{environment}` placeholder to prompt template. Update `build_system_prompt` signature and all call sites. Add unit tests for prompt formatting.
+- [x] **Implement environment gathering in `context.rs`** — `build_environment()` reads the root directory and current file's parent directory, builds sorted listings (dirs first, trailing `/`), skips sibling section when at root. Add unit tests with temp directories.
+- [x] **Wire it up in `process_file`** — Call `build_environment()`, pass result to `build_system_prompt`. Update existing integration tests that call `build_system_prompt` or `process_directive`.

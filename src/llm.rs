@@ -7,7 +7,7 @@ use tracing::debug;
 
 /// System prompt template used when document context is provided.
 ///
-/// The `{document}` placeholder is replaced with the actual document content.
+/// Placeholders: `{environment}`, `{document}`, `{browser_tool}`.
 const SYSTEM_PROMPT_TEMPLATE: &str = "\
 You are an AI assistant embedded in a markdown document. The user will ask \
 questions or request changes to the document below. Additional referenced \
@@ -26,6 +26,7 @@ To create new files, use the write tool. Be concise and reference the document d
 
 Respond in the same language as the document unless asked otherwise.
 
+{environment}\
 === DOCUMENT ===
 {document}
 === END DOCUMENT ===
@@ -287,7 +288,53 @@ After open, always snapshot first to see the page content before interacting.
 
 ";
 
-pub fn build_system_prompt(document: &str, browser_available: bool) -> String {
+/// Contextual environment information injected into the system prompt.
+#[derive(Debug, Clone, Default)]
+pub struct EnvironmentContext {
+    /// Path of the current file, relative to the knowledge base root.
+    pub file_path: String,
+    /// Today's date in ISO format (YYYY-MM-DD).
+    pub date: String,
+    /// Top-level entries in the knowledge base (dirs with trailing `/`).
+    pub top_level: Vec<String>,
+    /// Files in the same directory as the current file (empty when at root).
+    pub siblings: Vec<String>,
+}
+
+impl EnvironmentContext {
+    fn format(&self) -> String {
+        let mut s = String::from("=== ENVIRONMENT ===\n");
+        s.push_str(&format!("Current file: {}\n", self.file_path));
+        s.push_str(&format!("Date: {}\n", self.date));
+
+        if !self.top_level.is_empty() {
+            s.push_str("\nKnowledge base:\n");
+            for entry in &self.top_level {
+                s.push_str(&format!("  {entry}\n"));
+            }
+        }
+
+        if !self.siblings.is_empty() {
+            let parent = match self.file_path.rfind('/') {
+                Some(i) => &self.file_path[..i + 1],
+                None => "",
+            };
+            s.push_str(&format!("\nSame directory ({parent}):\n"));
+            for entry in &self.siblings {
+                s.push_str(&format!("  {entry}\n"));
+            }
+        }
+
+        s.push_str("=== END ENVIRONMENT ===\n\n");
+        s
+    }
+}
+
+pub fn build_system_prompt(
+    document: &str,
+    browser_available: bool,
+    environment: &EnvironmentContext,
+) -> String {
     let browser_section = if browser_available {
         BROWSER_TOOL_DOCS
     } else {
@@ -296,6 +343,7 @@ pub fn build_system_prompt(document: &str, browser_available: bool) -> String {
     SYSTEM_PROMPT_TEMPLATE
         .replace("{browser_tool}", browser_section)
         .replace("{document}", document)
+        .replace("{environment}", &environment.format())
 }
 
 // -- Request/response types for OpenAI-compatible API --
@@ -572,7 +620,11 @@ mod tests {
 
         let client = test_client(&server.uri(), None);
         let messages = vec![
-            Message::system(build_system_prompt("# My Document\n\nSome content.", false)),
+            Message::system(build_system_prompt(
+                "# My Document\n\nSome content.",
+                false,
+                &EnvironmentContext::default(),
+            )),
             Message::user("summarize this"),
         ];
 
@@ -686,6 +738,7 @@ mod tests {
             Message::system(build_system_prompt(
                 "# Shopping List\n\n- milk\n- eggs\n",
                 false,
+                &EnvironmentContext::default(),
             )),
             Message::user("edit this"),
         ];
@@ -712,7 +765,8 @@ mod tests {
     #[test]
     fn build_system_prompt__should_insert_document_content() {
         // When
-        let result = build_system_prompt("# Hello\n\nWorld.", false);
+        let result =
+            build_system_prompt("# Hello\n\nWorld.", false, &EnvironmentContext::default());
 
         // Then
         assert!(result.contains("# Hello\n\nWorld."));
@@ -723,7 +777,7 @@ mod tests {
     #[test]
     fn build_system_prompt__should_include_thinking_instruction() {
         // When
-        let result = build_system_prompt("doc", false);
+        let result = build_system_prompt("doc", false, &EnvironmentContext::default());
 
         // Then
         assert!(
@@ -735,7 +789,7 @@ mod tests {
     #[test]
     fn build_system_prompt__should_include_browser_tool_when_available() {
         // When
-        let result = build_system_prompt("doc", true);
+        let result = build_system_prompt("doc", true, &EnvironmentContext::default());
 
         // Then
         assert!(
@@ -752,13 +806,61 @@ mod tests {
     #[test]
     fn build_system_prompt__should_exclude_browser_tool_when_unavailable() {
         // When
-        let result = build_system_prompt("doc", false);
+        let result = build_system_prompt("doc", false, &EnvironmentContext::default());
 
         // Then
         assert!(
             !result.contains("## browser"),
             "should not include browser tool section"
         );
+    }
+
+    #[test]
+    fn build_system_prompt__should_include_environment_section() {
+        // Given
+        let env = EnvironmentContext {
+            file_path: "notes/rust.md".to_string(),
+            date: "2026-04-06".to_string(),
+            top_level: vec![
+                "notes/".to_string(),
+                "projects/".to_string(),
+                "roadmap.md".to_string(),
+            ],
+            siblings: vec![
+                "go.md".to_string(),
+                "python.md".to_string(),
+                "rust.md".to_string(),
+            ],
+        };
+
+        // When
+        let result = build_system_prompt("doc", false, &env);
+
+        // Then
+        assert!(result.contains("=== ENVIRONMENT ==="));
+        assert!(result.contains("Current file: notes/rust.md"));
+        assert!(result.contains("Date: 2026-04-06"));
+        assert!(result.contains("Knowledge base:\n  notes/\n  projects/\n  roadmap.md\n"));
+        assert!(result.contains("Same directory (notes/):\n  go.md\n  python.md\n  rust.md\n"));
+        assert!(result.contains("=== END ENVIRONMENT ==="));
+    }
+
+    #[test]
+    fn build_system_prompt__should_omit_siblings_when_empty() {
+        // Given
+        let env = EnvironmentContext {
+            file_path: "readme.md".to_string(),
+            date: "2026-04-06".to_string(),
+            top_level: vec!["readme.md".to_string(), "notes/".to_string()],
+            siblings: vec![],
+        };
+
+        // When
+        let result = build_system_prompt("doc", false, &env);
+
+        // Then
+        assert!(result.contains("Knowledge base:"));
+        assert!(!result.contains("Same directory"));
     }
 
     /// Integration test that talks to a real LLM API.

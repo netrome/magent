@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::llm::EnvironmentContext;
+
 /// Error resolving a referenced context file.
 #[derive(Debug)]
 pub enum ContextError {
@@ -124,6 +126,62 @@ pub fn build_context_string(
     }
 
     doc
+}
+
+/// Build environment context for the system prompt.
+///
+/// Reads the top-level entries and sibling files from disk. Entries are sorted
+/// alphabetically with directories first (trailing `/`). The sibling list is
+/// empty when the current file is at the knowledge base root.
+pub fn build_environment(root: &Path, current_file: &Path, date: &str) -> EnvironmentContext {
+    let file_path = current_file
+        .strip_prefix(root)
+        .unwrap_or(current_file)
+        .to_string_lossy()
+        .into_owned();
+
+    let top_level = list_directory(root);
+
+    let parent = current_file.parent();
+    let is_at_root = parent.is_none_or(|p| p == root);
+    let siblings = if is_at_root {
+        Vec::new()
+    } else {
+        list_directory(parent.unwrap())
+    };
+
+    EnvironmentContext {
+        file_path,
+        date: date.to_string(),
+        top_level,
+        siblings,
+    }
+}
+
+/// List directory entries: directories first (with trailing `/`), then files,
+/// both sorted alphabetically. Returns empty vec on I/O errors.
+fn list_directory(dir: &Path) -> Vec<String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+            dirs.push(format!("{name}/"));
+        } else {
+            files.push(name);
+        }
+    }
+
+    dirs.sort();
+    files.sort();
+    dirs.append(&mut files);
+    dirs
 }
 
 #[cfg(test)]
@@ -336,5 +394,104 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "sub/notes.md");
         assert_eq!(result[0].1, "sub content");
+    }
+
+    // -- build_environment tests --
+
+    #[test]
+    fn build_environment__should_set_relative_file_path() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("notes");
+        std::fs::create_dir(&sub).unwrap();
+        let file = sub.join("rust.md");
+        std::fs::write(&file, "").unwrap();
+
+        // When
+        let env = build_environment(dir.path(), &file, "2026-04-06");
+
+        // Then
+        assert_eq!(env.file_path, "notes/rust.md");
+        assert_eq!(env.date, "2026-04-06");
+    }
+
+    #[test]
+    fn build_environment__should_list_top_level_dirs_first_then_files() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("projects")).unwrap();
+        std::fs::create_dir(dir.path().join("notes")).unwrap();
+        std::fs::write(dir.path().join("roadmap.md"), "").unwrap();
+        std::fs::write(dir.path().join("about.md"), "").unwrap();
+        let file = dir.path().join("about.md");
+
+        // When
+        let env = build_environment(dir.path(), &file, "2026-04-06");
+
+        // Then — dirs first (sorted), then files (sorted)
+        assert_eq!(
+            env.top_level,
+            vec!["notes/", "projects/", "about.md", "roadmap.md"]
+        );
+    }
+
+    #[test]
+    fn build_environment__should_omit_siblings_when_file_at_root() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("readme.md"), "").unwrap();
+        std::fs::write(dir.path().join("notes.md"), "").unwrap();
+        let file = dir.path().join("readme.md");
+
+        // When
+        let env = build_environment(dir.path(), &file, "2026-04-06");
+
+        // Then
+        assert!(env.siblings.is_empty());
+    }
+
+    #[test]
+    fn build_environment__should_list_siblings_when_in_subdirectory() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("notes");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("rust.md"), "").unwrap();
+        std::fs::write(sub.join("go.md"), "").unwrap();
+        std::fs::write(sub.join("python.md"), "").unwrap();
+        let file = sub.join("rust.md");
+
+        // When
+        let env = build_environment(dir.path(), &file, "2026-04-06");
+
+        // Then
+        assert_eq!(env.siblings, vec!["go.md", "python.md", "rust.md"]);
+    }
+
+    // -- list_directory tests --
+
+    #[test]
+    fn list_directory__should_return_empty_for_nonexistent_dir() {
+        // When
+        let result = list_directory(Path::new("/nonexistent/path"));
+
+        // Then
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn list_directory__should_sort_dirs_before_files() {
+        // Given
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("zebra.md"), "").unwrap();
+        std::fs::create_dir(dir.path().join("alpha")).unwrap();
+        std::fs::write(dir.path().join("apple.md"), "").unwrap();
+        std::fs::create_dir(dir.path().join("beta")).unwrap();
+
+        // When
+        let result = list_directory(dir.path());
+
+        // Then
+        assert_eq!(result, vec!["alpha/", "beta/", "apple.md", "zebra.md"]);
     }
 }
