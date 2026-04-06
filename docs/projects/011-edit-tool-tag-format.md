@@ -110,31 +110,44 @@ Block 1: search text not found
 
 This gives the LLM the actual file content at the closest point, so it can adjust its next attempt. No edit distance or fuzzy string algorithms — just line-by-line trimmed equality within a sliding window.
 
-## Changes
+## Task breakdown
 
-### `src/tools/edit.rs` — `parse_blocks()`
+### PR 1: Tag-based input format
 
-Replace conflict-marker scanning with `<search>`/`</search>` + `<replace>`/`</replace>` tag scanning. Same `find()`-based approach, just different delimiters.
+Switch `parse_blocks()` from conflict markers to `<search>`/`<replace>` tags, and update all callers and docs.
 
-### `src/tools/edit.rs` — `execute()`
+**Changes:**
+- `src/tools/edit.rs` — rewrite `parse_blocks()` to scan for `<search>`/`</search>` + `<replace>`/`</replace>` tags instead of conflict markers.
+- `src/llm.rs` — update the edit tool section in the system prompt to show the new format.
+- `src/lib.rs` — update the edit tool call in the integration test.
+- `src/tools/edit.rs` — update all `parse_blocks` and `execute` unit tests.
 
-Add a fallback matching path: if exact `find()` fails, normalize both search text and file content (strip leading/trailing whitespace per line), find the match in normalized form, then map back to original byte offsets for replacement.
+**Acceptance criteria:**
+- `parse_blocks` correctly parses single, multiple, and multiline `<search>`/`<replace>` blocks.
+- `parse_blocks` returns an error for malformed input (missing closing tag, missing `<replace>` after `<search>`).
+- `parse_blocks` returns empty vec when no tags are present.
+- Empty `<replace></replace>` works for deletion.
+- All existing `execute` tests pass with the new format (same behavior, different delimiters).
+- System prompt shows the tag format.
+- Integration test uses the tag format.
 
-### `src/tools/edit.rs` — `find_best_match()`
+### PR 2: Whitespace-tolerant matching and actionable error messages
 
-New helper that slides a window over the file lines and returns the closest region. Called when both exact and whitespace-tolerant matching fail; result included in the error detail.
+Add fallback matching that tolerates whitespace differences, and improve error messages when matching fails entirely.
 
-### `src/llm.rs` — system prompt
+**Changes:**
+- `src/tools/edit.rs` — add whitespace-normalized fallback in the matching logic within `execute()`: strip leading/trailing whitespace per line from both search text and file content, find the match in normalized form, map back to original byte offsets.
+- `src/tools/edit.rs` — add `find_best_match()` helper: slide a window over the file lines, score by trimmed line equality, return the best region if it exceeds a threshold.
+- `src/tools/edit.rs` — when a search block fails, call `find_best_match()` and include the result in the error detail.
+- `src/tools/edit.rs` — unit tests for both features.
 
-Update the edit tool documentation to show the new tag format.
-
-### `src/lib.rs` — integration test
-
-Update the edit tool call in the integration test to use the new format.
-
-### `src/tools/edit.rs` — unit tests
-
-Update existing `parse_blocks` and `execute` tests to use the new format. Add tests for whitespace-tolerant matching (indentation differences, trailing spaces) and error messages (best-match output when search fails).
+**Acceptance criteria:**
+- Exact match is still attempted first and preferred.
+- Whitespace-tolerant match succeeds when only leading/trailing whitespace per line differs (indentation, trailing spaces, tabs vs spaces).
+- Whitespace-tolerant match fails when non-whitespace content differs or line count doesn't match.
+- When both matching strategies fail and a similar region exists (>50% line match), error includes "Best match (N/M lines) near line L:" with the actual file content.
+- When no similar region exists, error is the plain "search text not found" (no misleading suggestion).
+- Existing tests unaffected (they use exact matches, which still take priority).
 
 ## What doesn't change
 
