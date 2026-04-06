@@ -12,7 +12,7 @@ impl EditTool {
     }
 
     /// Apply search/replace edits to a file. Input format: path on first line,
-    /// then one or more conflict-marker-style search/replace blocks.
+    /// then one or more `<search>`/`<replace>` tag pairs.
     ///
     /// Never fails — errors are returned as the result string so the LLM
     /// can see what went wrong and adjust.
@@ -87,42 +87,75 @@ fn parse_input(input: &str) -> Result<(&str, Vec<EditBlock>), String> {
     Ok((path, blocks))
 }
 
-/// Parse one or more conflict-marker-style search/replace blocks.
+/// Parse one or more `<search>`/`<replace>` tag pairs.
+///
+/// Content between tags has one leading and one trailing newline stripped
+/// (if present), so tags can sit on their own lines without affecting the
+/// matched text.
 fn parse_blocks(input: &str) -> Result<Vec<EditBlock>, String> {
     let mut blocks = Vec::new();
-    let mut remaining = input;
+    let mut pos = 0;
 
-    while let Some(start) = remaining.find("<<<<<<< SEARCH") {
-        let after_marker = &remaining[start..];
+    while let Some(offset) = input[pos..].find("<search>") {
+        let tag_end = pos + offset + "<search>".len();
 
-        let search_start = after_marker
-            .find('\n')
-            .map(|i| start + i + 1)
-            .ok_or("Error: malformed search block")?;
+        // Strip one leading newline after <search>
+        let content_start = if input[tag_end..].starts_with('\n') {
+            tag_end + 1
+        } else {
+            tag_end
+        };
 
-        let divider = remaining[search_start..]
-            .find("\n=======\n")
-            .map(|i| search_start + i)
-            .ok_or("Error: missing ======= divider")?;
+        let search_close = input[content_start..]
+            .find("</search>")
+            .map(|i| content_start + i)
+            .ok_or("Error: missing </search> tag")?;
 
-        let replace_start = divider + "\n=======\n".len();
+        // Strip one trailing newline before </search>
+        let content_end =
+            if search_close > content_start && input.as_bytes()[search_close - 1] == b'\n' {
+                search_close - 1
+            } else {
+                search_close
+            };
 
-        let end = remaining[replace_start..]
-            .find("\n>>>>>>> REPLACE")
-            .map(|i| replace_start + i)
-            .ok_or("Error: missing >>>>>>> REPLACE marker")?;
+        let search_text = &input[content_start..content_end];
 
-        let search = &remaining[search_start..divider];
-        let replace = &remaining[replace_start..end];
+        let after_search = search_close + "</search>".len();
+
+        let replace_open = input[after_search..]
+            .find("<replace>")
+            .map(|i| after_search + i)
+            .ok_or("Error: missing <replace> tag after </search>")?;
+
+        let rep_tag_end = replace_open + "<replace>".len();
+
+        let rep_content_start = if input[rep_tag_end..].starts_with('\n') {
+            rep_tag_end + 1
+        } else {
+            rep_tag_end
+        };
+
+        let replace_close = input[rep_content_start..]
+            .find("</replace>")
+            .map(|i| rep_content_start + i)
+            .ok_or("Error: missing </replace> tag")?;
+
+        let rep_content_end =
+            if replace_close > rep_content_start && input.as_bytes()[replace_close - 1] == b'\n' {
+                replace_close - 1
+            } else {
+                replace_close
+            };
+
+        let replace_text = &input[rep_content_start..rep_content_end];
 
         blocks.push(EditBlock {
-            search: search.to_string(),
-            replace: replace.to_string(),
+            search: search_text.to_string(),
+            replace: replace_text.to_string(),
         });
 
-        // Advance past the REPLACE marker
-        let after_replace = end + "\n>>>>>>> REPLACE".len();
-        remaining = &remaining[after_replace..];
+        pos = replace_close + "</replace>".len();
     }
 
     Ok(blocks)
@@ -147,7 +180,7 @@ mod tests {
 
     #[test]
     fn parse_blocks__should_parse_single_block() {
-        let input = "<<<<<<< SEARCH\nold text\n=======\nnew text\n>>>>>>> REPLACE";
+        let input = "<search>\nold text\n</search>\n<replace>\nnew text\n</replace>";
         let blocks = parse_blocks(input).unwrap();
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].search, "old text");
@@ -157,16 +190,18 @@ mod tests {
     #[test]
     fn parse_blocks__should_parse_multiple_blocks() {
         let input = "\
-<<<<<<< SEARCH
+<search>
 first old
-=======
+</search>
+<replace>
 first new
->>>>>>> REPLACE
-<<<<<<< SEARCH
+</replace>
+<search>
 second old
-=======
+</search>
+<replace>
 second new
->>>>>>> REPLACE";
+</replace>";
         let blocks = parse_blocks(input).unwrap();
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].search, "first old");
@@ -178,14 +213,15 @@ second new
     #[test]
     fn parse_blocks__should_handle_multiline_content() {
         let input = "\
-<<<<<<< SEARCH
+<search>
 line one
 line two
 line three
-=======
+</search>
+<replace>
 replaced one
 replaced two
->>>>>>> REPLACE";
+</replace>";
         let blocks = parse_blocks(input).unwrap();
         assert_eq!(blocks[0].search, "line one\nline two\nline three");
         assert_eq!(blocks[0].replace, "replaced one\nreplaced two");
@@ -193,30 +229,47 @@ replaced two
 
     #[test]
     fn parse_blocks__should_handle_empty_replace() {
-        let input = "<<<<<<< SEARCH\ndelete me\n=======\n\n>>>>>>> REPLACE";
+        let input = "<search>\ndelete me\n</search>\n<replace></replace>";
         let blocks = parse_blocks(input).unwrap();
         assert_eq!(blocks[0].search, "delete me");
         assert_eq!(blocks[0].replace, "");
     }
 
     #[test]
-    fn parse_blocks__should_return_empty_for_no_markers() {
+    fn parse_blocks__should_return_empty_for_no_tags() {
         let blocks = parse_blocks("just some text").unwrap();
         assert!(blocks.is_empty());
     }
 
     #[test]
-    fn parse_blocks__should_error_on_missing_divider() {
-        let input = "<<<<<<< SEARCH\nold text\n>>>>>>> REPLACE";
+    fn parse_blocks__should_error_on_missing_close_search() {
+        let input = "<search>\nold text";
         let result = parse_blocks(input);
         assert!(result.is_err());
+        assert!(result.unwrap_err().contains("</search>"));
+    }
+
+    #[test]
+    fn parse_blocks__should_error_on_missing_replace_after_search() {
+        let input = "<search>\nold text\n</search>";
+        let result = parse_blocks(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("<replace>"));
+    }
+
+    #[test]
+    fn parse_blocks__should_error_on_missing_close_replace() {
+        let input = "<search>\nold text\n</search>\n<replace>\nnew text";
+        let result = parse_blocks(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("</replace>"));
     }
 
     // --- parse_input ---
 
     #[test]
     fn parse_input__should_extract_path_and_blocks() {
-        let input = "notes/test.md\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE";
+        let input = "notes/test.md\n<search>\nold\n</search>\n<replace>\nnew\n</replace>";
         let (path, blocks) = parse_input(input).unwrap();
         assert_eq!(path, "notes/test.md");
         assert_eq!(blocks.len(), 1);
@@ -224,7 +277,7 @@ replaced two
 
     #[test]
     fn parse_input__should_reject_empty_path() {
-        let input = "\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE";
+        let input = "\n<search>\nold\n</search>\n<replace>\nnew\n</replace>";
         let result = parse_input(input);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("empty file path"));
@@ -246,8 +299,9 @@ replaced two
         create_file(dir.path(), "test.md", "Hello world");
         let tool = EditTool::new(dir.path().to_path_buf());
 
-        let result = tool
-            .execute("test.md\n<<<<<<< SEARCH\nHello world\n=======\nHello Rust\n>>>>>>> REPLACE");
+        let result = tool.execute(
+            "test.md\n<search>\nHello world\n</search>\n<replace>\nHello Rust\n</replace>",
+        );
 
         assert_eq!(result, "Applied 1/1 edits to test.md");
         assert_eq!(
@@ -263,16 +317,18 @@ replaced two
         let tool = EditTool::new(dir.path().to_path_buf());
 
         let input = "test.md\n\
-<<<<<<< SEARCH
+<search>
 AAA
-=======
+</search>
+<replace>
 111
->>>>>>> REPLACE
-<<<<<<< SEARCH
+</replace>
+<search>
 CCC
-=======
+</search>
+<replace>
 333
->>>>>>> REPLACE";
+</replace>";
 
         let result = tool.execute(input);
 
@@ -289,8 +345,9 @@ CCC
         create_file(dir.path(), "test.md", "Hello world");
         let tool = EditTool::new(dir.path().to_path_buf());
 
-        let result = tool
-            .execute("test.md\n<<<<<<< SEARCH\nnonexistent\n=======\nreplacement\n>>>>>>> REPLACE");
+        let result = tool.execute(
+            "test.md\n<search>\nnonexistent\n</search>\n<replace>\nreplacement\n</replace>",
+        );
 
         assert!(result.contains("Applied 0/1 edits to test.md"));
         assert!(result.contains("Block 1: search text not found"));
@@ -303,16 +360,18 @@ CCC
         let tool = EditTool::new(dir.path().to_path_buf());
 
         let input = "test.md\n\
-<<<<<<< SEARCH
+<search>
 AAA
-=======
+</search>
+<replace>
 111
->>>>>>> REPLACE
-<<<<<<< SEARCH
+</replace>
+<search>
 ZZZ
-=======
+</search>
+<replace>
 999
->>>>>>> REPLACE";
+</replace>";
 
         let result = tool.execute(input);
 
@@ -330,7 +389,7 @@ ZZZ
         create_file(dir.path(), "test.md", "foo bar foo bar");
         let tool = EditTool::new(dir.path().to_path_buf());
 
-        let result = tool.execute("test.md\n<<<<<<< SEARCH\nfoo\n=======\nbaz\n>>>>>>> REPLACE");
+        let result = tool.execute("test.md\n<search>\nfoo\n</search>\n<replace>\nbaz\n</replace>");
 
         assert_eq!(result, "Applied 1/1 edits to test.md");
         assert_eq!(
@@ -345,8 +404,7 @@ ZZZ
         create_file(dir.path(), "test.md", "keep\ndelete me\nkeep");
         let tool = EditTool::new(dir.path().to_path_buf());
 
-        let result =
-            tool.execute("test.md\n<<<<<<< SEARCH\ndelete me\n\n=======\n\n>>>>>>> REPLACE");
+        let result = tool.execute("test.md\n<search>\ndelete me\n\n</search>\n<replace></replace>");
 
         assert_eq!(result, "Applied 1/1 edits to test.md");
         assert_eq!(
@@ -361,7 +419,7 @@ ZZZ
         let tool = EditTool::new(dir.path().to_path_buf());
 
         let result =
-            tool.execute("nonexistent.md\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE");
+            tool.execute("nonexistent.md\n<search>\nold\n</search>\n<replace>\nnew\n</replace>");
 
         assert!(result.contains("Error:"));
     }
@@ -372,7 +430,7 @@ ZZZ
         let tool = EditTool::new(dir.path().to_path_buf());
 
         let result =
-            tool.execute("../../etc/passwd\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE");
+            tool.execute("../../etc/passwd\n<search>\nold\n</search>\n<replace>\nnew\n</replace>");
 
         assert!(result.contains("Error:"));
     }
@@ -383,7 +441,9 @@ ZZZ
         create_file(dir.path(), "test.md", "original content");
         let tool = EditTool::new(dir.path().to_path_buf());
 
-        tool.execute("test.md\n<<<<<<< SEARCH\nnonexistent\n=======\nreplacement\n>>>>>>> REPLACE");
+        tool.execute(
+            "test.md\n<search>\nnonexistent\n</search>\n<replace>\nreplacement\n</replace>",
+        );
 
         assert_eq!(
             fs::read_to_string(dir.path().join("test.md")).unwrap(),
@@ -399,16 +459,18 @@ ZZZ
         let tool = EditTool::new(dir.path().to_path_buf());
 
         let input = "test.md\n\
-<<<<<<< SEARCH
+<search>
 AAA
-=======
+</search>
+<replace>
 CCC
->>>>>>> REPLACE
-<<<<<<< SEARCH
+</replace>
+<search>
 CCCBBB
-=======
+</search>
+<replace>
 DONE
->>>>>>> REPLACE";
+</replace>";
 
         let result = tool.execute(input);
 
@@ -430,14 +492,15 @@ DONE
         let tool = EditTool::new(dir.path().to_path_buf());
 
         let input = "test.md\n\
-<<<<<<< SEARCH
+<search>
 Old paragraph
 with two lines.
-=======
+</search>
+<replace>
 New paragraph
 with three lines
 of content.
->>>>>>> REPLACE";
+</replace>";
 
         let result = tool.execute(input);
 

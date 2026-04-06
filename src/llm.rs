@@ -69,11 +69,12 @@ Creates intermediate directories as needed. Returns confirmation with path and b
 Search-and-replace in any file in the knowledge base (including the current document).
 Input format:
   path/to/file.md
-  <<<<<<< SEARCH
+  <search>
   exact text to find
-  =======
+  </search>
+  <replace>
   replacement text
-  >>>>>>> REPLACE
+  </replace>
 First line is the relative path. Then one or more search/replace blocks.
 Each block replaces the first occurrence only. Use read first to see exact file content.
 

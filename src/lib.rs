@@ -1962,7 +1962,7 @@ Found 3 results.
              <magent-input>draft.md</magent-input>\n",
             // Turn 3: edit the typo
             "<magent-tool-call tool=\"edit\">\n\
-             <magent-input>draft.md\n<<<<<<< SEARCH\nWelcoem to the guide.\n=======\nWelcome to the guide.\n>>>>>>> REPLACE</magent-input>\n",
+             <magent-input>draft.md\n<search>\nWelcoem to the guide.\n</search>\n<replace>\nWelcome to the guide.\n</replace></magent-input>\n",
             // Turn 4: move to guides/
             "<magent-tool-call tool=\"move\">\n\
              <magent-input>draft.md -> guides/getting-started.md</magent-input>\n",
